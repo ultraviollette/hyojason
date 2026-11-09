@@ -1,9 +1,11 @@
 # 효자손 (hyojason) 프로필 설정 예시
-# 모델: 현재 사용 중인 모델 그대로 (upstage/solar-mini4:free)
+# 모델: 현재 사용 중인 모델 그대로
+# 키 값은 .env 의 ANTHROPIC_API_KEY 에서 읽는다.
 model:
-  default: upstage/solar-mini4:free
-  provider: nous
-  base_url: https://inference-api.nousresearch.com/v1
+  default: claude-sonnet-4-5
+  provider: anthropic
+  base_url: https://api.anthropic.com/v1
+  api_mode: anthropic_messages
 
 # AI Gateway (아직 적용 안 함): Cloudflare AI Gateway를 거치게 할 때 이 자리에 설정한다.
 #   base_url: https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_ID>/anthropic

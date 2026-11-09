@@ -72,7 +72,7 @@ AX School 강의 적용: **Hermes Agent**(본체·메모리·스킬·API 서버)
 ## 실행 (개발자용)
 
 ```bash
-# 1) MCP 서버 (Python 3.11+, uv)
+# 1) MCP 서버 (Python 3.14+, uv)
 cd mcp && uv sync && cp ../.env.example ../.env   # 키 채우기
 uv run python -m shopping_tools.server              # stdio MCP
 
