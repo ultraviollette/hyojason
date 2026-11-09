@@ -31,6 +31,7 @@ def _clean(s: str) -> str:
 
 
 def _mock(query: str, n: int) -> list[dict[str, Any]]:
+    """네이버 키가 없을 때. source="mock" 으로 표시해 에이전트가 웹 검색 폴백으로 넘어가게 한다."""
     base = [
         {"title": f"{query} 스킨 보디수트 긴팔 M/L", "lprice": 18900, "mallName": "쿠팡", "brand": "",
          "link": "https://example.com/p/1", "image": "", "productType": "3", "productId": "mock-1"},
@@ -39,7 +40,10 @@ def _mock(query: str, n: int) -> list[dict[str, Any]]:
         {"title": f"[해외직구] {query} 보디수트 무료배송", "lprice": 9800, "mallName": "알리익스프레스", "brand": "",
          "link": "https://example.com/p/3", "image": "", "productType": "3", "productId": "mock-3"},
     ]
-    return [_normalize(x) for x in base[:n]]
+    out = [_normalize(x) for x in base[:n]]
+    for x in out:
+        x["source"] = "mock"
+    return out
 
 
 def _normalize(item: dict[str, Any]) -> dict[str, Any]:
