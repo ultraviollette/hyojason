@@ -1,0 +1,36 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+auth.json
+
+# client data — never commit real profiles
+clients/*
+!clients/_example.yaml
+!clients/README.md
+
+# hermes runtime
+hermes/memories/
+hermes/sessions/
+hermes/logs/
+hermes/state.db
+hermes/config.yaml
+
+# python
+mcp/.venv/
+mcp/__pycache__/
+mcp/**/__pycache__/
+mcp/*.egg-info/
+.pytest_cache/
+
+# node / cloudflare
+kakao-bridge/node_modules/
+kakao-bridge/.wrangler/
+kakao-bridge/dist/
+kakao-bridge/.dev.vars
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/

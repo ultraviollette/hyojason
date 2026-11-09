@@ -1,0 +1,40 @@
+# 클라이언트 프로필 양식
+# 실제 파일은 clients/<client_id>.yaml 로 만들고 git에 올리지 않는다 (.gitignore 처리됨).
+# client_id 는 채널 사용자 ID와 매핑된다 (channels 항목 참고).
+
+client_id: example-mom
+display_name: 어머니            # 에이전트가 부르는 호칭
+language: ko
+tone: elder-polite             # elder-polite | casual | formal
+
+channels:
+  kakao_user_id: ""            # 카카오 챗봇 userRequest.user.id (처음 대화 때 자동 채움)
+  telegram_chat_id: ""
+
+body:
+  top_size: ""                 # 예: "55" 또는 "M"
+  bottom_size: ""
+  shoe_size_mm: ""             # 예: "235"
+  height_cm: ""
+  notes: ""                    # 예: "팔·다리·어깨가 짧은 편. 소매 긴 옷은 줄여야 함"
+
+preferences:
+  likes:
+    - ""                       # 예: "여성스러운 핏", "스카프", "챙 넓은 모자"
+  dislikes:                    # Jev 게이트 violates_profile 에 쓰임
+    - ""                       # 예: "목이 파인 옷", "오버사이즈 핏", "캐주얼 운동화", "야구모자"
+  brands_ok: []
+  brands_avoid: []
+  price_sensitivity: medium    # low | medium | high
+
+shopping_rules:
+  default_deadline_days: null  # 기한을 말하지 않으면 묻는다 (null) / 숫자면 기본값
+  allow_overseas_when_no_deadline: true
+  max_candidates: 3
+  payment: self                # self(본인 결제) | delegate(아래 사람에게 결제 링크 전달)
+  payment_delegate_contact: "" # payment=delegate 일 때
+
+delivery:
+  region: ""                   # 예: "지방 중소도시" — 도착일 계산용 (정확한 주소는 저장하지 않는다)
+
+history: []                    # log_recommendation 이 채움

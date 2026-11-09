@@ -1,0 +1,35 @@
+# ~/.hermes/profiles/hyojason/config.yaml 로 복사해서 쓴다.
+# ⚠️ 키 이름은 Hermes 버전에 따라 다를 수 있다. `hermes config` / 공식 문서로 확인 후 적용.
+# 비밀값은 여기 쓰지 말고 ~/.hermes/profiles/hyojason/.env 에 둔다.
+
+# 모델: Cloudflare AI Gateway 를 거쳐 Anthropic 호출 (AI 게이트웨이 강의 적용 지점)
+# .env: AI_GATEWAY_KEY=... (게이트웨이 뒤의 실제 Anthropic 키는 게이트웨이에 저장)
+model:
+  provider: custom
+  base_url: https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_ID>/anthropic
+  model: claude-sonnet-4-5
+  key_env: AI_GATEWAY_KEY
+
+# 외부(카카오 브릿지)에서 호출할 HTTP API
+gateway:
+  api_server:
+    enabled: true
+    host: 127.0.0.1
+    port: 8642
+    # API_SERVER_KEY 는 .env 에
+
+# 효자손 도구: 네이버 쇼핑 검색 + 상품 검증(Jev) + 클라이언트 프로필
+mcp_servers:
+  hyojason_tools:
+    command: uv
+    args: ["run", "--project", "<REPO>/mcp", "python", "-m", "shopping_tools.server"]
+    env:
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET}
+      JEV_API_KEY: ${JEV_API_KEY}
+      HYOJASON_CLIENTS_DIR: <REPO>/clients
+
+# 비전(사진 해석)은 Hermes 기본 vision 사용
+auxiliary:
+  vision:
+    provider: anthropic

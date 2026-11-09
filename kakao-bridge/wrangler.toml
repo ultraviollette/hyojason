@@ -1,0 +1,9 @@
+name = "hyojason-kakao-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# 비밀값은 `wrangler secret put HERMES_API_URL` / `HERMES_API_KEY` / `KAKAO_BOT_SECRET`
+# 로컬 개발은 kakao-bridge/.dev.vars (gitignore 됨)
+
+[vars]
+HERMES_MODEL = ""
