@@ -70,7 +70,9 @@ def log_recommendation(client_id: str, request_json: str, chosen_json: str = "")
 
 @mcp.tool()
 async def search_products(query: str, max_results: int = 20, sort: str = "sim") -> dict[str, Any]:
-    """네이버 쇼핑에서 상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date."""
+    """네이버 쇼핑에서 상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date.
+    반환 items[].url을 check_product(product_url=…)에 넘길 것.
+    """
     items = await naver.search(query, max_results=max_results, sort=sort)
     return {"query": query, "count": len(items), "items": items}
 
@@ -99,7 +101,8 @@ async def _fetch_text(url: str, limit: int = 6000) -> tuple[str, str]:
 @mcp.tool()
 async def check_product(product_url: str, title: str = "", mall: str = "",
                         deadline: str = "", forbidden_terms_json: str = "[]") -> dict[str, Any]:
-    """상품 하나를 검증한다. deadline 은 '이번 주 안', '수요일까지', '2026-11-12' 등.
+    """product_url에는 search_products가 돌려준 url을 그대로 넣는다. product_id가 아니다.
+    상품 하나를 검증한다. deadline 은 '이번 주 안', '수요일까지', '2026-11-12' 등.
     반환: in_stock / domestic_shipping / arrives_by_deadline / violates_profile (yes|no|unknown), note, buy_url
     """
     forbidden = json.loads(forbidden_terms_json or "[]")
@@ -125,7 +128,8 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
 
     passed = (result["in_stock"] != "no"
               and result["violates_profile"] != "yes"
-              and (dl is None or result["arrives_by_deadline"] != "no"))
+              and (dl is None or result["arrives_by_deadline"] != "no")
+              and (dl is None or result["domestic_shipping"] != "no"))
 
     return {
         **result,
