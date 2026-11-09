@@ -28,10 +28,12 @@ description: 어르신 클라이언트의 쇼핑 요청(말 또는 사진)을 �
 
 결과의 `source` 가 `"mock"` 이면 네이버 API 키가 없는 것이다. 그때는 **Hermes 내장 웹 검색**으로 대신한다:
 - 검색어 예: `살색 긴팔 보디수트 쿠팡`, `스킨색 이너 레오타드 네이버쇼핑` 처럼 "품목 + 쇼핑몰 이름"을 붙여 상품 페이지가 걸리게 한다.
-- 결과 중 상품 상세 페이지 URL(쿠팡 `coupang.com/vp/products/…`, 네이버 `smartstore.naver.com/…`, `shopping.naver.com/…`, 11번가, G마켓 등)만 골라 5~10개를 후보로 삼는다. 블로그·뉴스·카테고리 페이지는 버린다.
+- 결과 중 **개별 상품 URL 패턴**만 후보로 쓴다: `coupang.com/vp/products/`, `smartstore.naver.com/…/products/`, `brand.naver.com/…/products/`, `11st.co.kr/products/`, `gmarket.co.kr/item` 중 하나와 일치하는 URL만 쓴다. 카테고리 페이지, 검색결과 페이지, 블로그·뉴스는 URL 패턴이 달라도 전부 버린다.
 - 제목·가격은 검색 결과 스니펫에서 가져오고, 없으면 4단계 `check_product` 가 페이지에서 읽어 온 값을 쓴다.
 
 어느 경로든 결과가 3개 미만이면 검색어를 넓혀 한 번 더.
+
+**위 URL 패턴에 맞는 상품 페이지를 하나도 못 찾으면** 카테고리 링크나 추측 상품으로 억지로 답하지 않는다. "지금은 찾아 드리기 어려워요. 자녀분께 한 번 물어봐 주세요"라고 솔직히 말하고 끝낸다.
 
 ### 4. 검증 (후보마다)
 `check_product(product_url, deadline, client_profile)` 를 호출한다. 이 도구는 상품 페이지를 읽고 다음을 yes/no로 돌려준다:
