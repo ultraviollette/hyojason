@@ -1,10 +1,12 @@
 """Jev yes/no 게이트.
 
-Jev(System One)는 "질문 + 근거 텍스트 → yes/no" 를 LLM 호출보다 싸고 빠르게 처리한다.
-후보가 20개면 LLM 20번 대신 Jev 20번을 돌리고, 살아남은 1~3개만 LLM 이 설명한다.
+Jev(TypeSafe System One)는 "상태 텍스트 → 타입이 정해진 질문들의 답(yes/no 확률 등)"을
+LLM 호출보다 싸고 빠르게 돌려준다. 후보 20개면 LLM 20번 대신 Jev 20번을 돌리고,
+살아남은 1~3개만 LLM 이 설명한다.
 
-⚠️ Jev SDK 호출부(_jev_decide)는 강의에서 배운 실제 SDK 시그니처로 채워야 한다.
-    JEV_API_KEY 가 없으면 규칙 기반 폴백(_rule_decide)으로 동작한다.
+- 패키지: `jev` (PyPI, Python >= 3.14). 키는 환경변수 TYPESAFE_API_KEY (console.typesafe.ai).
+- 사용: `jev.decide(state_text, PydanticModel)` → bool 필드는 p(yes) >= 0.5 로 코어싱.
+- 키가 없거나 jev 가 설치되지 않았으면 규칙 기반 폴백(_rule_decide)으로 동작한다.
 """
 from __future__ import annotations
 
@@ -14,26 +16,37 @@ from datetime import date, timedelta
 from typing import Literal
 
 Decision = Literal["yes", "no", "unknown"]
+GATE_KEYS = ("in_stock", "domestic_shipping", "arrives_by_deadline", "violates_profile")
 
-QUESTIONS = {
-    "in_stock": "이 상품 페이지 내용으로 볼 때 지금 구매(주문) 가능한 재고가 있는가?",
-    "domestic_shipping": "이 상품은 국내에서 발송되는가? (해외 직구·해외 배송이면 no)",
-    "arrives_by_deadline": "이 상품은 주어진 기한({deadline})까지 도착할 수 있는가?",
-    "violates_profile": "이 상품은 다음 금지 조건 중 하나에 해당하는가: {forbidden}",
-}
+# ---------- Jev ----------
+
+try:
+    import jev  # type: ignore
+    from pydantic import BaseModel, Field
+
+    class ProductGates(BaseModel):
+        """상품 페이지 텍스트를 보고 네 가지를 판정한다. 상품 1개 = Jev 호출 1번."""
+        in_stock: bool = Field(description="지금 바로 주문할 수 있는 재고가 있다 (품절·재입고 대기·판매 종료가 아니다)")
+        domestic_shipping: bool = Field(description="국내에서 발송된다 (해외 직구·해외 배송이 아니다)")
+        arrives_by_deadline: bool = Field(description="본문에 적힌 '필요 기한'까지 도착할 수 있다. 기한이 '없음'이면 참")
+        violates_profile: bool = Field(description="본문에 적힌 '피해야 할 조건' 중 하나에 해당한다. 조건이 '없음'이면 거짓")
+
+    _JEV_AVAILABLE = True
+except Exception:  # jev 미설치 또는 Python < 3.14
+    _JEV_AVAILABLE = False
 
 
-def _jev_decide(question: str, evidence: str) -> Decision:
-    """Jev SDK 호출. TODO: 강의 기준 실제 호출로 교체.
+def _jev_decide_all(evidence: str, *, deadline: date | None, forbidden: list[str]) -> dict[str, Decision]:
+    state = (
+        f"[필요 기한] {deadline.isoformat() if deadline else '없음'} (오늘 {date.today().isoformat()})\n"
+        f"[피해야 할 조건] {', '.join(forbidden) or '없음'}\n"
+        f"[상품 정보]\n{evidence[:4000]}"
+    )
+    result = jev.decide(state, ProductGates)  # type: ignore[name-defined]
+    return {k: ("yes" if getattr(result, k) else "no") for k in GATE_KEYS}
 
-    예상 형태 (확인 필요):
-        from jev import Jev
-        client = Jev(api_key=os.environ["JEV_API_KEY"])
-        r = client.decide(question=question, context=evidence)
-        return "yes" if r.answer else "no"
-    """
-    raise NotImplementedError
 
+# ---------- 규칙 기반 폴백 ----------
 
 _OUT_OF_STOCK = re.compile(r"(품절|일시\s*품절|재입고|sold\s*out|구매\s*불가|판매\s*종료|단종)", re.I)
 _OVERSEAS = re.compile(r"(해외\s*직구|해외\s*배송|직구|관세|통관|배송\s*기간\s*\d+\s*~?\s*\d*\s*주|aliexpress|알리익스프레스|큐텐|qoo10|taobao|아마존|amazon)", re.I)
@@ -61,16 +74,22 @@ def _rule_decide(key: str, evidence: str, *, deadline: date | None, forbidden: l
     return "unknown"
 
 
-def decide(key: str, evidence: str, *, deadline: date | None = None, forbidden: list[str] | None = None) -> Decision:
+# ---------- 공개 API ----------
+
+def decide_all(evidence: str, *, deadline: date | None = None, forbidden: list[str] | None = None) -> tuple[dict[str, Decision], str]:
+    """네 게이트를 한 번에 판정. 반환: (결과 dict, 사용한 엔진 'jev' | 'rules')."""
     forbidden = forbidden or []
-    if os.environ.get("JEV_API_KEY"):
-        q = QUESTIONS[key].format(deadline=deadline.isoformat() if deadline else "없음",
-                                  forbidden=", ".join(forbidden) or "없음")
+    if _JEV_AVAILABLE and os.environ.get("TYPESAFE_API_KEY"):
         try:
-            return _jev_decide(q, evidence)
-        except NotImplementedError:
-            pass
-    return _rule_decide(key, evidence, deadline=deadline, forbidden=forbidden)
+            return _jev_decide_all(evidence, deadline=deadline, forbidden=forbidden), "jev"
+        except Exception:
+            pass  # Jev 장애 시 규칙으로 폴백
+    return {k: _rule_decide(k, evidence, deadline=deadline, forbidden=forbidden) for k in GATE_KEYS}, "rules"
+
+
+def decide(key: str, evidence: str, *, deadline: date | None = None, forbidden: list[str] | None = None) -> Decision:
+    """게이트 하나만 (하위 호환)."""
+    return decide_all(evidence, deadline=deadline, forbidden=forbidden)[0][key]
 
 
 def parse_deadline(text: str | None) -> date | None:

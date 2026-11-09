@@ -43,12 +43,12 @@ AX School 강의 적용: **Hermes Agent**(본체·메모리·스킬·API 서버)
 - [x] 효자손 페르소나(`hermes/SOUL.md`)와 쇼핑 워크플로 스킬(`hermes/skills/hyojason-shopping/SKILL.md`)
 - [x] MCP 서버 `shopping_tools`: 네이버 쇼핑 검색, 상품 검증(재고/발송경로/기한/금지조건 → passed), 클라이언트 프로필 CRUD, 추천 이력. 네이버 키 없이도 mock 으로 동작
 - [x] 기한 표현 파서 ("이번 주 안", "수요일까지", "3일 안", "2026-11-12")
-- [x] 카카오 브릿지 Worker: 스킬 요청 수신 → 즉시 콜백 응답 → Hermes 호출 → callbackUrl 로 최종 답. 타입체크 통과
+- [x] 카카오 브릿지 Worker: 스킬 요청 수신 → 즉시 콜백 응답 → Hermes 호출 → callbackUrl 로 최종 답 (`npm run typecheck` 통과)
 - [x] 클라이언트 프로필 양식과 git 분리
 
 ### 아직 안 되는 것
 - [ ] Hermes 프로필(`~/.hermes/profiles/hyojason/`)에 SOUL/스킬/MCP 설정 실제 적용 및 터미널 end-to-end 테스트
-- [ ] Jev SDK 실제 호출 (`mcp/shopping_tools/gates.py` 의 `_jev_decide`). 지금은 규칙 기반 폴백
+- [ ] Jev 실제 판정 확인 — `jev.decide(state, ProductGates)` 연결은 돼 있음(상품 1개당 Jev 1회). `TYPESAFE_API_KEY` 넣고 실측 필요. 키 없으면 규칙 기반 폴백
 - [ ] 카카오 챗봇 생성·배포, 사진 메시지가 스킬 서버에 어떤 필드로 오는지 실측 (멤버 제보: secureURL)
 - [ ] Mac 의 Hermes gateway 를 외부(카카오)에서 닿게 하는 터널 (cloudflared)
 - [ ] 쿠팡 상품 페이지의 재고·도착일 정확 판독 (지금은 제목·판매처·페이지 텍스트 키워드 기반)

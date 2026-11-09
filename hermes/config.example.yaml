@@ -26,7 +26,7 @@ mcp_servers:
     env:
       NAVER_CLIENT_ID: ${NAVER_CLIENT_ID}
       NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET}
-      JEV_API_KEY: ${JEV_API_KEY}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY}
       HYOJASON_CLIENTS_DIR: <REPO>/clients
 
 # 비전(사진 해석)은 Hermes 기본 vision 사용

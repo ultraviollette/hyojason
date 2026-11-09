@@ -27,4 +27,4 @@ print(asyncio.run(check_product('https://example.com', title='[해외직구] 보
 | `check_product(product_url, title, mall, deadline, forbidden_terms_json)` | 페이지 읽기 + 4개 게이트 → `passed`, `note`, `buy_url` |
 | `log_recommendation(client_id, request_json, chosen_json)` | 이력 |
 
-Jev 연결: `shopping_tools/gates.py` 의 `_jev_decide(question, evidence)` 를 강의에서 배운 SDK 호출로 채운다. 그 전까지는 정규식 규칙으로 동작한다.
+Jev 연결: `shopping_tools/gates.py` 의 `jev.decide(state, ProductGates)` 한 번으로 네 게이트를 판정한다(상품 1개 = Jev 1회). `TYPESAFE_API_KEY` 가 없으면 정규식 규칙으로 폴백.

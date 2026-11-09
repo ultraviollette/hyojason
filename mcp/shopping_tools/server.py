@@ -107,12 +107,7 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
     page_text, final_url = await _fetch_text(product_url)
     evidence = f"{title} {mall} {page_text}"
 
-    result = {
-        "in_stock": gates.decide("in_stock", evidence),
-        "domestic_shipping": gates.decide("domestic_shipping", evidence),
-        "arrives_by_deadline": gates.decide("arrives_by_deadline", evidence, deadline=dl),
-        "violates_profile": gates.decide("violates_profile", evidence, forbidden=forbidden),
-    }
+    result, engine = gates.decide_all(evidence, deadline=dl, forbidden=forbidden)
 
     notes = []
     if result["in_stock"] == "no":
@@ -139,6 +134,7 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
         "note": " / ".join(notes) or "특이사항 없음",
         "buy_url": final_url,
         "evidence_chars": len(page_text),
+        "gate_engine": engine,  # 'jev' | 'rules'
     }
 
 
