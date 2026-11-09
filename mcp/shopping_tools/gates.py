@@ -10,6 +10,7 @@ LLM 호출보다 싸고 빠르게 돌려준다. 후보 20개면 LLM 20번 대신
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import date, timedelta
@@ -82,8 +83,8 @@ def decide_all(evidence: str, *, deadline: date | None = None, forbidden: list[s
     if _JEV_AVAILABLE and os.environ.get("TYPESAFE_API_KEY"):
         try:
             return _jev_decide_all(evidence, deadline=deadline, forbidden=forbidden), "jev"
-        except Exception:
-            pass  # Jev 장애 시 규칙으로 폴백
+        except Exception as e:  # Jev 장애 시 규칙으로 폴백
+            logging.getLogger(__name__).warning("jev failed, falling back to rules: %s", e)
     return {k: _rule_decide(k, evidence, deadline=deadline, forbidden=forbidden) for k in GATE_KEYS}, "rules"
 
 
