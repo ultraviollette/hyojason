@@ -25,30 +25,44 @@
                                                         │  SOUL.md 페르소나 + hyojason-shopping 스킬
                                                         ▼
                                               MCP: shopping_tools (Python)
-                                              ├─ search_products   네이버 쇼핑 API
+                                              ├─ search_products   네이버 쇼핑 API (키 없으면 mock, 이때 웹 검색으로 대체)
                                               ├─ check_product     페이지 읽기 + Jev yes/no 게이트
                                               └─ get/save_client_profile  클라이언트별 프로필 (git 제외)
                                                         │
                                            callbackUrl ◀─┘  최종 답을 카톡으로
 ```
 
-AX School 강의 적용: **Hermes Agent**(본체·메모리·스킬·API 서버), **Jev**(후보 검증 yes/no 게이트), **AI Gateway**(Hermes 모델 호출을 Cloudflare AI Gateway 경유), **Claude Code**(구현).
+AX School 강의 적용: **Hermes Agent**(본체·메모리·스킬·API 서버), **Jev**(후보 검증 yes/no 게이트), **AI Gateway**(예정: Hermes 모델 호출을 Cloudflare AI Gateway 경유), **Claude Code**(구현).
+
+실제 사용 모델: `claude-sonnet-4-5` (Anthropic API 직접 호출).
 
 ### 사용자별 맞춤이 되는 이유
 에이전트 본체(SOUL.md, 스킬, 도구)와 **클라이언트 프로필**(`clients/<id>.yaml`: 치수, 선호, 금지 조건, 쇼핑 규칙, 이력)을 분리했다. 카카오 사용자 ID → client_id 매핑으로 같은 에이전트가 어머니·아버지·다른 집 부모님을 각각 다르게 응대한다. 프로필은 git에 올리지 않는다(`clients/_example.yaml`만 양식으로 공개).
+
+### 검색 전략
+1. 쿠팡 파트너스 API: 승인 후 1순위로 쓴다.
+2. 웹 검색: 현재 쓰는 방식이다. 일반 웹 검색으로는 개별 상품 URL을 안정적으로 얻지 못하는 한계가 있다.
+
+네이버 검색 API는 2026년 개인 발급 중단으로 포기했다.
 
 ## 진행 상황
 
 ### 지금 되는 것
 - [x] 효자손 페르소나(`hermes/SOUL.md`)와 쇼핑 워크플로 스킬(`hermes/skills/hyojason-shopping/SKILL.md`)
-- [x] MCP 서버 `shopping_tools`: 네이버 쇼핑 검색, 상품 검증(재고/발송경로/기한/금지조건 → passed), 클라이언트 프로필 CRUD, 추천 이력. 네이버 키 없이도 mock 으로 동작
+- [x] MCP 서버 `shopping_tools`: 상품 검증(재고/발송경로/기한/금지조건 → passed), 클라이언트 프로필 CRUD, 추천 이력. 네이버 쇼핑 검색은 코드만 있고 키가 없어 mock 으로 동작
 - [x] 기한 표현 파서 ("이번 주 안", "수요일까지", "3일 안", "2026-11-12")
 - [x] 카카오 브릿지 Worker: 스킬 요청 수신 → 즉시 콜백 응답 → Hermes 호출 → callbackUrl 로 최종 답 (`npm run typecheck` 통과)
 - [x] 클라이언트 프로필 양식과 git 분리
+- [x] Hermes 터미널 end-to-end: 프로필 인식 → 되묻기 → 검색 → Jev 검증 → 후보
+- [x] Jev 실제 호출 확인 (`gate_engine=jev`)
+- [x] 웹 검색 폴백 호출
+- [x] 프로필별 도구 제한
 
 ### 아직 안 되는 것
-- [ ] Hermes 프로필(`~/.hermes/profiles/hyojason/`)에 SOUL/스킬/MCP 설정 실제 적용 및 터미널 end-to-end 테스트
-- [ ] Jev 실제 판정 확인 — `jev.decide(state, ProductGates)` 연결은 돼 있음(상품 1개당 Jev 1회). `TYPESAFE_API_KEY` 넣고 실측 필요. 키 없으면 규칙 기반 폴백
+- [ ] 실제 상품 데이터
+  - 네이버 검색 API: 2026년 개인 발급 중단으로 포기
+  - 쿠팡 파트너스: 가입 완료, 최종 승인 대기 (누적 판매 15만 원)
+  - 웹 검색 폴백: 호출까지 확인됐으나 일반 웹 검색으로는 개별 상품 URL을 안정적으로 얻지 못함. 쿠팡 API 승인 후 해결 예정
 - [ ] 카카오 챗봇 생성·배포, 사진 메시지가 스킬 서버에 어떤 필드로 오는지 실측 (멤버 제보: secureURL)
 - [ ] Mac 의 Hermes gateway 를 외부(카카오)에서 닿게 하는 터널 (cloudflared)
 - [ ] 쿠팡 상품 페이지의 재고·도착일 정확 판독 (지금은 제목·판매처·페이지 텍스트 키워드 기반)
