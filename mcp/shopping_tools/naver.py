@@ -64,11 +64,15 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def has_credentials() -> bool:
+    return bool(os.environ.get("NAVER_CLIENT_ID") and os.environ.get("NAVER_CLIENT_SECRET"))
+
+
 async def search(query: str, max_results: int = 20, sort: str = "sim") -> list[dict[str, Any]]:
-    cid = os.environ.get("NAVER_CLIENT_ID")
-    sec = os.environ.get("NAVER_CLIENT_SECRET")
-    if not cid or not sec:
+    if not has_credentials():
         return _mock(query, max_results)
+    cid = os.environ["NAVER_CLIENT_ID"]
+    sec = os.environ["NAVER_CLIENT_SECRET"]
 
     params = {"query": query, "display": min(max_results, 100), "sort": sort}
     headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": sec}

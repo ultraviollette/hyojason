@@ -2,7 +2,7 @@
 
 도구:
   get_client_profile / save_client_profile / update_client_profile / resolve_client
-  search_products          네이버 쇼핑 검색 (키 없으면 mock)
+  search_products          네이버 쇼핑 검색 → (키 없으면) 쿠팡 임시 스크레이퍼 → (차단되면) mock
   check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
   log_recommendation       추천·선택 기록
 
@@ -21,7 +21,7 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP as _Server
 
-from . import gates, naver, profiles
+from . import coupang_scrape, gates, naver, profiles
 
 mcp = _Server("hyojason-shopping-tools")
 
@@ -70,10 +70,16 @@ def log_recommendation(client_id: str, request_json: str, chosen_json: str = "")
 
 @mcp.tool()
 async def search_products(query: str, max_results: int = 20, sort: str = "sim") -> dict[str, Any]:
-    """네이버 쇼핑에서 상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date.
+    """상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date (네이버에만 적용).
     반환 items[].url을 check_product(product_url=…)에 넘길 것.
+    순서: 네이버 키 있으면 네이버 → 없으면 쿠팡 임시 스크레이퍼(source="coupang_scrape")
+    → 차단·빈 결과면 mock(source="mock", 실제 상품 아님).
     """
-    items = await naver.search(query, max_results=max_results, sort=sort)
+    if naver.has_credentials():
+        items = await naver.search(query, max_results=max_results, sort=sort)
+    else:
+        r = await coupang_scrape.search_coupang(query, max_results=min(max_results, 10))
+        items = r["items"] if not r.get("blocked") and r["items"] else await naver.search(query, max_results=max_results)
     return {"query": query, "count": len(items), "items": items}
 
 
