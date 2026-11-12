@@ -22,6 +22,8 @@ import logging
 import os
 import re
 import time
+import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -68,7 +70,7 @@ class Settings:
 # ---------- Hermes ----------
 
 async def ask_hermes(s: Settings, client: httpx.AsyncClient, kakao_user_id: str, text: str,
-                     image_urls: list[str]) -> str:
+                     image_urls: list[str], conversation: str) -> str:
     """Hermes Agent 의 OpenAI 호환 API (/v1/responses) 호출. payload 는 Worker 와 동일."""
     prefix = f"[channel=kakao user_id={kakao_user_id}]"
     content: list[dict[str, str]] = [
@@ -78,7 +80,7 @@ async def ask_hermes(s: Settings, client: httpx.AsyncClient, kakao_user_id: str,
 
     payload: dict[str, Any] = {
         "input": [{"role": "user", "content": content}],
-        "conversation": f"kakao-{kakao_user_id}",
+        "conversation": conversation,
         "metadata": {"channel": "kakao", "channel_user_id": kakao_user_id},
     }
     if s.hermes_model:
@@ -301,16 +303,66 @@ class UserLocks:
         return len(self._locks)
 
 
+# ---------- 대화 세션 ----------
+
+SESSION_IDLE_S = 30 * 60
+RESET_MSG = "네, 처음부터 다시 할게요. 필요한 물건을 말씀하시거나 사진을 보내 주세요."
+_RESET_WORDS = {"처음부터", "새로시작"}
+_RESET_NOISE = re.compile(r"[\s.!~?…]+")
+
+
+def is_reset(text: str) -> bool:
+    """'처음부터', '새로 시작' (띄어쓰기·끝 문장부호 무시)."""
+    return _RESET_NOISE.sub("", text) in _RESET_WORDS
+
+
+class Conversations:
+    """사용자별 Hermes conversation ID.
+
+    예전에는 conversation 을 kakao-<사용자ID> 로 고정해 첫 대화부터 영원히 이어 썼고, 효자손이
+    옛 스킬 규칙·옛 링크·옛 판정을 기억으로 재사용했다. 마지막 메시지로부터 30분이 지났거나
+    '처음부터'를 받으면 새 ID(kakao-<사용자ID>-<시작시각>-<난수>)로 바꾼다. 프로필은 MCP clients/ 에 따로 있다.
+
+    상태는 메모리에만 있다. 브릿지가 재시작되면 모든 사용자가 새 대화로 시작한다(옛 대화로 돌아가지 않는다).
+    """
+
+    def __init__(self, now: Callable[[], float] = time.time, idle_s: float = SESSION_IDLE_S) -> None:
+        self._now, self._idle = now, idle_s
+        self._s: dict[str, tuple[str, float]] = {}   # user_id -> (conversation, 마지막 메시지 시각)
+
+    def _new_id(self, user_id: str, t: float) -> str:
+        return f"kakao-{user_id}-{int(t)}-{uuid.uuid4().hex[:6]}"
+
+    def current(self, user_id: str) -> tuple[str, bool]:
+        """메시지 도착 시 호출. (conversation, 새로 시작했는지)"""
+        t = self._now()
+        cur = self._s.get(user_id)
+        new = cur is None or t - cur[1] >= self._idle
+        conv = self._new_id(user_id, t) if new else cur[0]
+        self._s[user_id] = (conv, t)
+        if len(self._s) > 500:  # 30분 넘게 조용한 사용자는 어차피 새 대화라 지운다
+            self._s = {u: v for u, v in self._s.items() if t - v[1] < self._idle}
+        return conv, new
+
+    def reset(self, user_id: str) -> str:
+        t = self._now()
+        conv = self._new_id(user_id, t)
+        self._s[user_id] = (conv, t)
+        return conv
+
+
 # ---------- app ----------
 
 def _log(path: str, outcome: str, started: float) -> None:
     log.info("path=%s outcome=%s duration_ms=%d", path, outcome, (time.monotonic() - started) * 1000)
 
 
-def create_app(settings: Settings | None = None, client: httpx.AsyncClient | None = None) -> Starlette:
+def create_app(settings: Settings | None = None, client: httpx.AsyncClient | None = None,
+               now: Callable[[], float] = time.time) -> Starlette:
     s = settings or Settings.from_env()
     tasks: set[asyncio.Task] = set()  # 백그라운드 태스크가 GC 되지 않도록 참조 유지
     user_locks = UserLocks()
+    conversations = Conversations(now=now)
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -324,14 +376,15 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
     async def health(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
-    async def callback_job(callback_url: str, user_id: str, text: str, images: list[str], started: float) -> None:
+    async def callback_job(callback_url: str, user_id: str, text: str, images: list[str], started: float,
+                           conversation: str, new_conv: bool) -> None:
         c: httpx.AsyncClient = app.state.client
-        outcome = "ok"
+        outcome = "ok,new_conversation" if new_conv else "ok"
         try:
             # 타임아웃은 앞 메시지를 기다린 시간까지 포함한다. callbackUrl 유효 시간이 대기 중에도 흐르기 때문.
             async with asyncio.timeout(HERMES_TIMEOUT_S):
                 async with user_locks.hold(user_id):
-                    reply = await ask_hermes(s, c, user_id, text, images)
+                    reply = await ask_hermes(s, c, user_id, text, images, conversation)
         except TimeoutError:
             reply, outcome = FAIL_MSG, "hermes_timeout"
         except Exception as e:  # 발화·URL 이 담길 수 있어 예외 메시지는 남기지 않는다
@@ -364,12 +417,22 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         user_id = str(user.get("id") or "unknown")
         callback_url = ur.get("callbackUrl")
 
+        # '처음부터'·'새로 시작': Hermes 를 부르지 않고 즉시 새 대화로 바꾼다 (콜백 없이 바로 답한다).
+        if is_reset(text) and not images:
+            conversations.reset(user_id)
+            _log("skill", "reset", started)
+            return JSONResponse(kakao_text_body(RESET_MSG))
+
+        # 대화 ID 는 Hermes 를 부를 때가 아니라 메시지가 도착한 시점에 정한다.
+        # (처음부터 앞에 대기 중이던 메시지는 옛 대화로 마무리된다)
+        conversation, new_conv = conversations.current(user_id)
+
         # 콜백을 못 쓰는 상황(설정 안 됨)이면 동기 응답을 시도하되 4.5초에서 끊는다.
         if not callback_url:
             try:
                 async with asyncio.timeout(SYNC_TIMEOUT_S):
                     async with user_locks.hold(user_id):
-                        reply = await ask_hermes(s, app.state.client, user_id, text, images)
+                        reply = await ask_hermes(s, app.state.client, user_id, text, images, conversation)
                 outcome = "sync_ok"
             except Exception as e:
                 reply, outcome = NO_CALLBACK_MSG, f"sync_fail:{type(e).__name__}"
@@ -377,7 +440,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
             return JSONResponse(kakao_reply_body(reply))
 
         # 비동기 경로: 즉시 ack → 백그라운드에서 Hermes → callbackUrl 로 최종 답
-        t = asyncio.create_task(callback_job(str(callback_url), user_id, text, images, started))
+        t = asyncio.create_task(callback_job(str(callback_url), user_id, text, images, started,
+                                             conversation, new_conv))
         tasks.add(t)
         t.add_done_callback(tasks.discard)
         return JSONResponse({"version": "2.0", "useCallback": True, "data": {"text": QUICK_ACK}})
@@ -392,6 +456,7 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
     )
     app.state.tasks = tasks
     app.state.user_locks = user_locks
+    app.state.conversations = conversations
     return app
 
 

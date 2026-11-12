@@ -44,7 +44,7 @@ def test_immediate_ack_then_callback() -> None:
                 # Hermes payload 는 Worker 와 동일
                 sent = hermes_calls[0]
                 assert sent["auth"] == "Bearer k"
-                assert sent["body"]["conversation"] == "kakao-u1"
+                assert sent["body"]["conversation"].startswith("kakao-u1-")  # 사용자별 + 대화 세션별
                 assert sent["body"]["metadata"] == {"channel": "kakao", "channel_user_id": "u1"}
                 assert sent["body"]["input"][0]["content"][0]["text"] == "[channel=kakao user_id=u1]\n살색 내의"
 
@@ -278,3 +278,90 @@ def test_labels_fit_kakao_14_char_limit() -> None:
     labels = [label for label, _ in _buttons(kakao_reply_body(reply))]
     assert labels == ["1번 exampl에서 보기", "2번 exampl에서 보기", "3번 exampl에서 보기"]
     assert all(len(label) <= 14 for label in labels)
+
+
+# ---------- 대화 세션 (30분 / 처음부터 / 재시작) ----------
+from server import RESET_MSG  # noqa: E402
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 1_800_000_000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _session_harness(clock: _Clock):
+    """가짜 Hermes 가 받은 conversation 을 기록한다. send(text) → (카카오 즉시 응답, 그 요청의 conversation 또는 None)"""
+    seen: list[str] = []
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "hermes.test":
+            seen.append(json.loads(req.content)["conversation"])
+            return httpx.Response(200, json={"output_text": "네"})
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(Settings(hermes_api_url=HERMES), client=client, now=clock)
+
+    async def send(bridge: httpx.AsyncClient, text: str):
+        before = len(seen)
+        r = await bridge.post("/kakao/skill", json={"userRequest": {
+            "utterance": text, "callbackUrl": CALLBACK, "user": {"id": "mom"}}})
+        await asyncio.wait_for(asyncio.gather(*app.state.tasks), timeout=2)
+        return r.json(), (seen[-1] if len(seen) > before else None)
+
+    return app, client, send
+
+
+def _run_session(steps):
+    async def run() -> None:
+        clock = _Clock()
+        app, client, send = _session_harness(clock)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bridge") as bridge:
+                await steps(clock, lambda text: send(bridge, text))
+        await client.aclose()
+    asyncio.run(run())
+
+
+def test_conversation_continues_within_30_minutes_then_starts_new() -> None:
+    async def steps(clock, send):
+        _, c1 = await send("사진")
+        clock.t += 29 * 60 + 59               # 마지막 메시지로부터 29분 59초
+        _, c2 = await send("리필이요")
+        clock.t += 30 * 60                    # 마지막 메시지로부터 30분
+        _, c3 = await send("이거 또 사고 싶어")
+        assert c1.startswith("kakao-mom-")
+        assert c1 == c2                       # 30분 안에는 이어서
+        assert c3 != c2                       # 30분 지나면 새 대화
+    _run_session(steps)
+
+
+def test_reset_words_switch_conversation_immediately_without_hermes() -> None:
+    async def steps(clock, send):
+        _, c1 = await send("사진")
+        for word in ("처음부터", "새로 시작", " 처음부터! ", "새로시작."):
+            clock.t += 1
+            reply, called = await send(word)
+            assert called is None                                   # Hermes 를 부르지 않는다
+            assert "useCallback" not in reply                       # 콜백 없이 바로 답한다
+            assert reply["template"]["outputs"][0]["simpleText"]["text"] == RESET_MSG
+        _, c2 = await send("양말 사고 싶어")
+        assert c2 != c1                                             # 30분이 안 지났어도 새 대화
+        _, c3 = await send("처음부터 다시 찾아 줘")                  # 문장 속 '처음부터'는 초기화가 아니다
+        assert c3 == c2
+    _run_session(steps)
+
+
+def test_bridge_restart_starts_new_conversation() -> None:
+    """상태는 메모리에만 있다. 재시작(새 앱)하면 30분 안이어도 새 대화로 시작하고, 옛 대화로 돌아가지 않는다."""
+    convs = []
+
+    async def steps(clock, send):
+        convs.append((await send("사진"))[1])
+
+    _run_session(steps)
+    _run_session(steps)  # 재시작
+    assert convs[0] != convs[1]
