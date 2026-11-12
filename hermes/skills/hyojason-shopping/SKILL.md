@@ -49,8 +49,14 @@ description: 어르신 클라이언트의 쇼핑 요청(말 또는 사진)을 �
 - `domestic_shipping` 국내 발송인가
 - `violates_profile` 프로필 금지 조건에 걸리나
 - `note` 사람이 읽을 한 줄 (예: "리뷰에 '팔이 짧다' 다수")
+- `readable` 페이지를 실제로 읽었나, `unreadable_reason` 못 읽은 이유 (차단, 빈 페이지, 재고 표시 없음)
 
-탈락 규칙:
+먼저 `readable` 을 본다:
+- `readable == false` 이면 재고를 모르는 것이지 품절이 아니다. **"품절"이라고 말하지 않는다.**
+  "이 페이지는 제가 읽지 못했어요"라고 말한 뒤, 상품명·가격·사이즈를 알려 달라고 하거나 다른 링크를 부탁한다.
+  이 상품은 추천 후보에서 뺀다 (`passed` 가 false).
+
+탈락 규칙 (`readable == true` 일 때):
 - `in_stock == no` → 탈락 ("품절")
 - 기한 있음 && `arrives_by_deadline == no` → 탈락 ("기한 안에 못 와요")
 - `violates_profile == yes` → 탈락 (어떤 조건인지 명시)
