@@ -1,4 +1,5 @@
-"""make_search_links: 모델이 URL 을 직접 조립하지 않도록 인코딩된 검색 링크를 돌려준다."""
+"""make_search_links: 모델이 URL 을 직접 조립하지 않도록 인코딩된 네이버 검색 링크를 돌려준다.
+쿠팡은 카카오 인앱 브라우저에서 링크가 막혀 URL 없이 앱 검색어(coupang_query)만 준다."""
 from urllib.parse import parse_qs, urlsplit
 
 from shopping_tools.server import make_search_links
@@ -12,17 +13,22 @@ def _q(url: str, key: str) -> str:
 
 def test_links_round_trip_exact_product_name() -> None:
     r = make_search_links(NAME)
-    assert r["coupang"].startswith("https://m.coupang.com/nm/search?q=")
     assert r["naver_shopping"].startswith("https://m.search.naver.com/search.naver?where=m_shop&query=")
-    assert _q(r["coupang"], "q") == NAME
     assert _q(r["naver_shopping"], "query") == NAME
-    assert " " not in r["coupang"] and "에" not in r["coupang"]  # 공백·한글이 인코딩돼 카톡에서 링크가 끊기지 않는다
+    assert " " not in r["naver_shopping"] and "에" not in r["naver_shopping"]  # 공백·한글이 인코딩돼 카톡에서 링크가 끊기지 않는다
+
+
+def test_coupang_is_a_plain_app_query_not_a_link() -> None:
+    r = make_search_links(NAME)
+    assert r["coupang_query"] == NAME
+    assert "coupang" not in r  # 쿠팡 URL 은 주지 않는다
+    assert not any("coupang.com" in str(v) for v in r.values())
 
 
 def test_special_characters_do_not_break_the_query() -> None:
     name = "A&B 샴푸 1L+리필 #2 50/50?"
     r = make_search_links(name)
-    assert _q(r["coupang"], "q") == name
+    assert r["coupang_query"] == name
     assert _q(r["naver_shopping"], "query") == name
     assert parse_qs(urlsplit(r["naver_shopping"]).query)["where"] == ["m_shop"]  # & 가 파라미터를 쪼개지 않는다
 

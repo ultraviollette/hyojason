@@ -2,7 +2,7 @@
 
 도구:
   get_client_profile / save_client_profile / update_client_profile / resolve_client
-  make_search_links        정확한 상품명 → 쿠팡·네이버쇼핑 검색 링크 (페이지는 읽지 않음)
+  make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
   search_products          네이버 쇼핑 검색 → (키 없으면) 쿠팡 임시 스크레이퍼 → (차단되면) mock
   check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
   log_recommendation       추천·선택 기록
@@ -87,13 +87,15 @@ async def search_products(query: str, max_results: int = 20, sort: str = "sim") 
 
 
 _SPACES = re.compile(r"\s+")
-COUPANG_SEARCH = "https://m.coupang.com/nm/search?q="  # 카카오 버튼에서 www 주소는 "사용권한이 없습니다"로 막힘
+# 쿠팡 검색 링크는 카카오 인앱 브라우저에서 www·m 주소 모두 "사용권한이 없습니다"로 막혀 링크 대신 검색어만 준다.
 NAVER_SHOP_SEARCH = "https://m.search.naver.com/search.naver?where=m_shop&query="
 
 
 @mcp.tool()
 def make_search_links(query: str) -> dict[str, Any]:
-    """정확한 상품명(브랜드 + 제품명 + 호수/색상·용량·개수)으로 쿠팡·네이버쇼핑 검색 링크를 만든다.
+    """정확한 상품명(브랜드 + 제품명 + 호수/색상·용량·개수)으로 네이버쇼핑 검색 링크와 쿠팡 앱 검색어를 만든다.
+    반환: naver_shopping(URL), coupang_query(쿠팡 앱에서 검색할 글자. 링크 아님).
+    쿠팡은 카카오 인앱 브라우저에서 검색 링크가 막혀 URL 을 주지 않는다. 쿠팡 URL 을 직접 만들지 않는다.
     링크 URL 은 직접 조립하지 말고 이 도구가 돌려준 것을 그대로 보낸다.
     이 도구는 페이지를 읽지 않는다. 재고·가격·도착일은 확인되지 않은 상태다.
     """
@@ -101,7 +103,7 @@ def make_search_links(query: str) -> dict[str, Any]:
     if not q:
         return {"error": "상품명이 비어 있어요"}
     enc = quote(q, safe="")
-    return {"query": q, "coupang": COUPANG_SEARCH + enc, "naver_shopping": NAVER_SHOP_SEARCH + enc}
+    return {"query": q, "naver_shopping": NAVER_SHOP_SEARCH + enc, "coupang_query": q}
 
 
 # ---------- 검증 ----------
