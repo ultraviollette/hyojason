@@ -182,55 +182,91 @@ _SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "�
           ("11st.co.kr", "11번가"), ("gmarket.co.kr", "G마켓"))
 
 
-def _site(url: str) -> str | None:
-    host = re.sub(r"^https?://", "", url).split("/", 1)[0].split("?", 1)[0].lower()
+LABEL_MAX = 14       # 카카오 버튼 문구 최대 14자
+_LABEL_TAIL = "에서 보기"
+_NOT_A_SITE = re.compile(r"(사러|보기|링크|열기|여기|클릭|바로\s*가기|\d+\s*번)")
+_HOST_PREFIX = re.compile(r"^(www|m|mobile|shop|store|mall)\.")
+_HOST_SUFFIX = re.compile(r"\.(co\.kr|or\.kr|com|kr|net|co|shop|store|io)$")
+
+
+def _host(url: str) -> str:
+    return re.sub(r"^https?://", "", url).split("/", 1)[0].split("?", 1)[0].split(":", 1)[0].lower()
+
+
+def _known_site(url: str) -> str | None:
+    host = _host(url)
     return next((name for dom, name in _SITES if host == dom or host.endswith("." + dom)), None)
 
 
-def split_links(text: str) -> tuple[str, list[str]]:
-    """본문에서 URL 을 빼고 (본문, [url…]) 을 돌려준다. URL 순서 유지, 중복 제거."""
-    urls: list[str] = []
+def _host_name(url: str) -> str:
+    """모르는 도메인에서 사이트 이름을 뽑는다. shop.espoir.co.kr → espoir"""
+    host = _HOST_SUFFIX.sub("", _host(url))
+    while _HOST_PREFIX.match(host):
+        host = _HOST_PREFIX.sub("", host, count=1)
+    return host.rsplit(".", 1)[-1] or "링크"
 
-    def take(url: str) -> str:
-        url = url.rstrip(_TRAIL)
-        if url not in urls:
-            urls.append(url)
-        return ""
+
+def _site_hint(text: str) -> str | None:
+    """링크 줄의 앞부분("에스쁘아 공식몰: URL")이 사이트 이름처럼 보이면 쓴다. 안내 문구("1번 사러 가기")는 버린다."""
+    hint = text.strip().strip(":：-→👉·• ").strip()
+    if 1 <= len(hint) <= 10 and not _NOT_A_SITE.search(hint) and re.search(r"\w", hint):
+        return hint
+    return None
+
+
+def site_name(url: str, hint: str | None = None) -> str:
+    """버튼에 쓸 사이트 이름: 아는 쇼핑몰 > 링크 줄에 적힌 이름 > 도메인에서 뽑은 이름."""
+    return _known_site(url) or (hint and _site_hint(hint)) or _host_name(url)
+
+
+def split_links(text: str) -> tuple[str, list[tuple[str, str | None]]]:
+    """본문에서 URL 을 빼고 (본문, [(url, 그 줄에 적힌 이름)…]) 을 돌려준다. URL 순서 유지, 중복 제거."""
+    links: list[tuple[str, str | None]] = []
 
     lines = []
     for line in text.split("\n"):
-        stripped = _LINK_MD.sub(lambda m: take(m.group(2)), line)
-        stripped = _LINK_RAW.sub(lambda m: take(m.group(1)), stripped)
-        if stripped != line:  # 링크가 있던 줄
+        found: list[tuple[str, str | None]] = []
+        stripped = _LINK_MD.sub(lambda m: found.append((m.group(2), m.group(1))) or "", line)
+        stripped = _LINK_RAW.sub(lambda m: found.append((m.group(1), None)) or "", stripped)
+        if found:  # 링크가 있던 줄
             rest = stripped.strip().rstrip(":：-→👉 ").strip()
+            for url, md_label in found:
+                url = url.rstrip(_TRAIL)
+                hint = md_label if md_label is not None else (rest if len(found) == 1 else None)
+                if url not in [u for u, _ in links]:
+                    links.append((url, hint))
             if len(re.sub(r"[\W_]", "", rest)) == 0 or len(rest) <= _LEFTOVER_MAX:
                 continue
             stripped = rest
         lines.append(stripped.rstrip())
     body = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-    return body, urls
+    return body, links
 
 
-def link_buttons(urls: list[str]) -> list[dict[str, str]]:
-    names = [_site(u) for u in urls[:MAX_BUTTONS]]
+def _fit(name: str, prefix: str = "") -> str:
+    room = LABEL_MAX - len(prefix) - len(_LABEL_TAIL)
+    return f"{prefix}{name[:max(room, 1)]}{_LABEL_TAIL}"
+
+
+def link_buttons(links: list[tuple[str, str | None]]) -> list[dict[str, str]]:
+    links = links[:MAX_BUTTONS]
+    names = [site_name(u, h) for u, h in links]
     buttons = []
-    for i, (u, name) in enumerate(zip(urls, names)):
-        label = f"{name}에서 보기" if name else "링크 열기"
-        if names.count(name) > 1:
-            label = f"{names[:i + 1].count(name)}번 {label}"
-        buttons.append({"action": "webLink", "label": label, "webLinkUrl": u})
+    for i, ((u, _), name) in enumerate(zip(links, names)):
+        prefix = f"{names[:i + 1].count(name)}번 " if names.count(name) > 1 else ""
+        buttons.append({"action": "webLink", "label": _fit(name, prefix), "webLinkUrl": u})
     return buttons
 
 
 def kakao_reply_body(text: str) -> dict[str, Any]:
     """Hermes 답변 → 카카오 응답. 링크가 없으면 simpleText 그대로, 있으면 본문은 글로, 링크는 버튼으로."""
-    body, urls = split_links(text)
-    if not urls:
+    body, links = split_links(text)
+    if not links:
         return kakao_text_body(text)
     chunks = split_text(body, CARD_DESC_MAX) if body else []
     *head, last = chunks or ["아래 버튼을 눌러 열어 보세요."]
     outputs: list[dict[str, Any]] = [{"simpleText": {"text": t}} for t in head[:2]]  # 말풍선 최대 3개
-    outputs.append({"textCard": {"description": last[:CARD_DESC_MAX], "buttons": link_buttons(urls),
+    outputs.append({"textCard": {"description": last[:CARD_DESC_MAX], "buttons": link_buttons(links),
                                  "buttonLayout": "vertical"}})
     return {"version": "2.0", "template": {"outputs": outputs}}
 

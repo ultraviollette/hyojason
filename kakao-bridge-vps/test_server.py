@@ -242,3 +242,39 @@ def test_button_url_is_byte_identical_to_tool_output() -> None:
     for reply in variants:
         wire = json.loads(json.dumps(kakao_reply_body(reply), ensure_ascii=False))  # 콜백 POST 본문 그대로
         assert _buttons(wire) == [("쿠팡에서 보기", REAL_COUPANG), ("네이버에서 보기", REAL_NAVER)], reply
+
+
+# ---------- 모르는 도메인의 버튼 이름 ----------
+from server import site_name  # noqa: E402
+
+
+def test_unknown_site_uses_name_written_on_the_link_line() -> None:
+    reply = ("이 상품 같아요. 23.5호·리필 옵션이 있는지 꼭 확인하세요.\n\n"
+             "에스쁘아 공식몰: https://www.espoir.com/product/detail?prdNo=123\n"
+             f"네이버쇼핑: {REAL_NAVER}")
+    body = kakao_reply_body(reply)
+    assert _buttons(body) == [("에스쁘아 공식몰에서 보기", "https://www.espoir.com/product/detail?prdNo=123"),
+                              ("네이버에서 보기", REAL_NAVER)]
+    assert "공식몰" not in _texts(body)[0]  # 링크 줄은 본문에서 빠진다
+
+
+def test_site_name_fallbacks() -> None:
+    assert site_name("https://shop.espoir.co.kr/p/1") == "espoir"            # 이름이 없으면 도메인에서
+    assert site_name("https://m.amoremall.com/kr/ko/product/detail") == "amoremall"
+    assert site_name("https://brand.naver.com/espoir/products/1", "에스쁘아 브랜드관") == "네이버"  # 아는 쇼핑몰이 우선
+    assert site_name("https://www.espoir.com/p/1", "👉 1번 사러 가기") == "espoir"  # 안내 문구는 이름으로 안 씀
+
+
+def test_labels_fit_kakao_14_char_limit() -> None:
+    # 10자 이름 + "에서 보기" = 15자 → 이름을 잘라 14자에 맞춘다
+    long_name = kakao_reply_body("후보예요.\n에스쁘아공식온라인몰: https://www.espoir.com/p/1")
+    assert _buttons(long_name) == [("에스쁘아공식온라인에서 보기", "https://www.espoir.com/p/1")]
+
+    # 같은 사이트가 여럿이면 번호를 붙이고, 번호까지 넣어 14자에 맞춘다
+    reply = ("후보예요.\n"
+             "아주아주긴브랜드공식온라인몰: https://a.example.com/p/1\n"   # 10자 넘는 이름은 안 쓰고 도메인으로
+             "[2번 사러 가기](https://b.example.com/p/2)\n"            # 안내 문구도 이름으로 안 씀
+             "https://b.example.com/p/3")
+    labels = [label for label, _ in _buttons(kakao_reply_body(reply))]
+    assert labels == ["1번 exampl에서 보기", "2번 exampl에서 보기", "3번 exampl에서 보기"]
+    assert all(len(label) <= 14 for label in labels)
