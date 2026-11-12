@@ -84,3 +84,15 @@ def test_readable_sold_out_page_is_sold_out(use_page):
     r = _check()
     assert r["readable"] is True
     assert r["in_stock"] == "no" and r["passed"] is False and "품절" in r["note"]
+
+
+def test_kids_item_is_flagged_from_title(use_page):
+    use_page(200, f"<title>주니어 발레 레오타드 : 댄스몰</title><body>{FILLER} 구매하기</body>")
+    r = _check()
+    assert r["kids_item"] is True and "아동용 상품이에요" in r["note"]
+    assert r["passed"] is True  # 알려 주기만 하고 탈락시키지 않는다
+
+
+def test_kids_word_only_in_body_is_not_flagged(use_page):
+    use_page(200, f"<title>여성 보디수트</title><body>{FILLER} 구매하기 함께 본 상품: 키즈 내복</body>")
+    assert _check()["kids_item"] is False

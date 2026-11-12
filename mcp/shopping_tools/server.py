@@ -92,6 +92,7 @@ _BLOCK_SCAN = 2000   # 차단·오류 페이지는 짧다. 이보다 긴 본문�
 _BLOCK_PAGE = re.compile(
     r"(captcha|access denied|are you a robot|봇\s*확인|봇\(bot\)|보안\s*문자|비정상적인\s*접근"
     r"|사용권한이\s*(없|제한)|접속이\s*불가|에러\s*페이지|시스템\s*오류)", re.I)
+_KIDS = re.compile(r"(아동|키즈|주니어|kids|junior)", re.I)  # 상품명에서만 본다 (본문 추천 영역 오탐 방지)
 _BUYABLE = re.compile(r"(구매하기|바로\s*구매|주문하기|장바구니\s*담기|add\s*to\s*cart|buy\s*now)", re.I)
 
 
@@ -101,6 +102,7 @@ class Page:
     final_url: str
     status: int | None
     unreadable_reason: str | None   # None 이면 읽음
+    page_title: str = ""            # 읽었을 때만 <title>
 
 
 async def _fetch_page(url: str, limit: int = 6000, *, transport: httpx.AsyncBaseTransport | None = None) -> Page:
@@ -114,6 +116,7 @@ async def _fetch_page(url: str, limit: int = 6000, *, transport: httpx.AsyncBase
         return Page("", url, None, f"페이지 요청 실패({type(e).__name__})")
 
     soup = BeautifulSoup(r.text, "html.parser")
+    page_title = soup.title.get_text(" ", strip=True) if soup.title else ""
     for t in soup(["script", "style", "noscript"]):
         t.decompose()
     text = _WS.sub(" ", soup.get_text(" ")).strip()[:limit]
@@ -126,7 +129,9 @@ async def _fetch_page(url: str, limit: int = 6000, *, transport: httpx.AsyncBase
         reason = "본문이 거의 없음 (JS 렌더링이 필요하거나 빈 페이지)"
     else:
         reason = None
-    return Page(text if reason is None else "", str(r.url), r.status_code, reason)
+    if reason is not None:
+        return Page("", str(r.url), r.status_code, reason)
+    return Page(text, str(r.url), r.status_code, None, page_title)
 
 
 @mcp.tool()
@@ -135,7 +140,7 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
     """product_url에는 search_products가 돌려준 url을 그대로 넣는다. product_id가 아니다.
     상품 하나를 검증한다. deadline 은 '이번 주 안', '수요일까지', '2026-11-12' 등.
     반환: in_stock / domestic_shipping / arrives_by_deadline / violates_profile (yes|no|unknown), note, buy_url,
-          readable(페이지를 읽었는지), unreadable_reason.
+          readable(페이지를 읽었는지), unreadable_reason, kids_item(상품명에 아동/키즈/주니어).
     readable=false 이면 in_stock 은 unknown 이고 passed 는 false 다. 이때 '품절'이라고 말하면 안 된다.
     """
     forbidden = json.loads(forbidden_terms_json or "[]")
@@ -155,7 +160,11 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
     elif result["in_stock"] == "unknown" and _BUYABLE.search(page_text):
         result["in_stock"] = "yes"
 
+    kids = _KIDS.search(f"{title} {page.page_title}")
+
     notes = []
+    if kids:
+        notes.append(f"아동용 상품이에요 (상품명에 '{kids.group(1)}')")
     if unreadable is not None:
         notes.append(f"페이지를 읽지 못함: {unreadable}")
     if result["in_stock"] == "no":
@@ -177,6 +186,7 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
         "passed": passed,
         "readable": unreadable is None,
         "unreadable_reason": unreadable,
+        "kids_item": kids is not None,
         "http_status": page.status,
         "deadline_parsed": dl.isoformat() if dl else None,
         "note": " / ".join(notes) or "특이사항 없음",
