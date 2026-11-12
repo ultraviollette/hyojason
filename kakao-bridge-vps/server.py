@@ -167,6 +167,36 @@ def kakao_text_body(text: str) -> dict[str, Any]:
     return {"version": "2.0", "template": {"outputs": [{"simpleText": {"text": t}} for t in chunks]}}
 
 
+# ---------- 사용자별 순서 보장 ----------
+
+class UserLocks:
+    """같은 사용자의 요청을 도착 순서대로 하나씩 Hermes 에 보낸다.
+
+    사진과 글을 연달아 보내면 두 요청이 같은 conversation 으로 동시에 Hermes 에 가서,
+    뒤 메시지가 앞 메시지의 결과를 모른 채 답했다. asyncio.Lock 은 대기 순서(FIFO)를 지킨다.
+    아무도 쓰지 않는 사용자의 락은 지워서 메모리가 쌓이지 않게 한다.
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._refs: dict[str, int] = {}
+
+    @asynccontextmanager
+    async def hold(self, key: str):
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        self._refs[key] = self._refs.get(key, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            self._refs[key] -= 1
+            if self._refs[key] == 0:
+                del self._refs[key], self._locks[key]
+
+    def __len__(self) -> int:
+        return len(self._locks)
+
+
 # ---------- app ----------
 
 def _log(path: str, outcome: str, started: float) -> None:
@@ -176,6 +206,7 @@ def _log(path: str, outcome: str, started: float) -> None:
 def create_app(settings: Settings | None = None, client: httpx.AsyncClient | None = None) -> Starlette:
     s = settings or Settings.from_env()
     tasks: set[asyncio.Task] = set()  # 백그라운드 태스크가 GC 되지 않도록 참조 유지
+    user_locks = UserLocks()
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -193,8 +224,10 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         c: httpx.AsyncClient = app.state.client
         outcome = "ok"
         try:
+            # 타임아웃은 앞 메시지를 기다린 시간까지 포함한다. callbackUrl 유효 시간이 대기 중에도 흐르기 때문.
             async with asyncio.timeout(HERMES_TIMEOUT_S):
-                reply = await ask_hermes(s, c, user_id, text, images)
+                async with user_locks.hold(user_id):
+                    reply = await ask_hermes(s, c, user_id, text, images)
         except TimeoutError:
             reply, outcome = FAIL_MSG, "hermes_timeout"
         except Exception as e:  # 발화·URL 이 담길 수 있어 예외 메시지는 남기지 않는다
@@ -231,7 +264,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         if not callback_url:
             try:
                 async with asyncio.timeout(SYNC_TIMEOUT_S):
-                    reply = await ask_hermes(s, app.state.client, user_id, text, images)
+                    async with user_locks.hold(user_id):
+                        reply = await ask_hermes(s, app.state.client, user_id, text, images)
                 outcome = "sync_ok"
             except Exception as e:
                 reply, outcome = NO_CALLBACK_MSG, f"sync_fail:{type(e).__name__}"
@@ -253,6 +287,7 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         lifespan=lifespan,
     )
     app.state.tasks = tasks
+    app.state.user_locks = user_locks
     return app
 
 
