@@ -34,3 +34,8 @@ kakao-bridge/.dev.vars
 .DS_Store
 .vscode/
 .idea/
+
+# kakao-bridge-vps
+kakao-bridge-vps/.venv/
+kakao-bridge-vps/__pycache__/
+kakao-bridge-vps/bridge.env

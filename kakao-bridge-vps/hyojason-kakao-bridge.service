@@ -1,0 +1,23 @@
+# systemd user 서비스 예시
+# 설치:
+#   mkdir -p ~/.config/systemd/user ~/.config/hyojason
+#   cp hyojason-kakao-bridge.service ~/.config/systemd/user/
+#   cp bridge.env.example ~/.config/hyojason/bridge.env && chmod 600 ~/.config/hyojason/bridge.env   # 값 채우기
+#   systemctl --user daemon-reload && systemctl --user enable --now hyojason-kakao-bridge
+#   loginctl enable-linger hermes      # 로그아웃 후에도 user 서비스 유지
+#   journalctl --user -u hyojason-kakao-bridge -f
+
+[Unit]
+Description=Hyojason Kakao bridge (Kakao skill -> Hermes -> callbackUrl)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/hermes/hyojason/kakao-bridge-vps
+EnvironmentFile=/home/hermes/.config/hyojason/bridge.env
+ExecStart=/home/hermes/.local/bin/uv run --project /home/hermes/hyojason/kakao-bridge-vps python server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+[project]
+name = "hyojason-kakao-bridge-vps"
+version = "0.1.0"
+description = "효자손 카카오 브릿지 (VPS 상시 프로세스판): 카카오 스킬 → Hermes /v1/responses → callbackUrl"
+requires-python = ">=3.14"
+dependencies = [
+  "starlette>=0.40",
+  "httpx>=0.27",
+  "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false   # 스크립트 하나(server.py)라 패키지로 빌드하지 않는다
