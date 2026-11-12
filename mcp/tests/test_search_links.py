@@ -12,7 +12,7 @@ def _q(url: str, key: str) -> str:
 
 def test_links_round_trip_exact_product_name() -> None:
     r = make_search_links(NAME)
-    assert r["coupang"].startswith("https://www.coupang.com/np/search?q=")
+    assert r["coupang"].startswith("https://m.coupang.com/nm/search?q=")
     assert r["naver_shopping"].startswith("https://m.search.naver.com/search.naver?where=m_shop&query=")
     assert _q(r["coupang"], "q") == NAME
     assert _q(r["naver_shopping"], "query") == NAME

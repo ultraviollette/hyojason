@@ -133,7 +133,7 @@ def test_same_user_messages_are_processed_in_order() -> None:
 # ---------- 링크 → 버튼 ----------
 from server import kakao_reply_body, kakao_text_body  # noqa: E402
 
-COUPANG = "https://www.coupang.com/np/search?q=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EC%BF%A0%EC%85%98"
+COUPANG = "https://m.coupang.com/nm/search?q=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EC%BF%A0%EC%85%98"
 NAVER = "https://m.search.naver.com/search.naver?where=m_shop&query=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84"
 REORDER_REPLY = f"""에스쁘아 비벨벳 커버 쿠션 23.5호 페어 올리브 리필로 찾아봤어요.
 
@@ -222,8 +222,8 @@ def test_callback_sends_buttons() -> None:
     asyncio.run(run())
 
 
-# make_search_links("에스쁘아 비벨벳 커버 쿠션 23.5호 페어 올리브 리필") 의 실제 출력 (2026-11-12)
-REAL_COUPANG = ("https://www.coupang.com/np/search?q=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EB%B9%84%EB%B2%A8%EB%B2%B3"
+# make_search_links("에스쁘아 비벨벳 커버 쿠션 23.5호 페어 올리브 리필") 의 실제 출력 (쿠팡은 모바일 주소)
+REAL_COUPANG = ("https://m.coupang.com/nm/search?q=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EB%B9%84%EB%B2%A8%EB%B2%B3"
                 "%20%EC%BB%A4%EB%B2%84%20%EC%BF%A0%EC%85%98%2023.5%ED%98%B8%20%ED%8E%98%EC%96%B4%20%EC%98%AC%EB%A6%AC%EB%B8%8C"
                 "%20%EB%A6%AC%ED%95%84")
 REAL_NAVER = ("https://m.search.naver.com/search.naver?where=m_shop&query=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EB%B9%84"

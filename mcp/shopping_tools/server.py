@@ -87,7 +87,7 @@ async def search_products(query: str, max_results: int = 20, sort: str = "sim") 
 
 
 _SPACES = re.compile(r"\s+")
-COUPANG_SEARCH = "https://www.coupang.com/np/search?q="
+COUPANG_SEARCH = "https://m.coupang.com/nm/search?q="  # 카카오 버튼에서 www 주소는 "사용권한이 없습니다"로 막힘
 NAVER_SHOP_SEARCH = "https://m.search.naver.com/search.naver?where=m_shop&query="
 
 
