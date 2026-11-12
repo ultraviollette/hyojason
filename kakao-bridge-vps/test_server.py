@@ -128,3 +128,95 @@ def test_same_user_messages_are_processed_in_order() -> None:
         await client.aclose()
 
     asyncio.run(run())
+
+
+# ---------- 링크 → 버튼 ----------
+from server import kakao_reply_body, kakao_text_body  # noqa: E402
+
+COUPANG = "https://www.coupang.com/np/search?q=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EC%BF%A0%EC%85%98"
+NAVER = "https://m.search.naver.com/search.naver?where=m_shop&query=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84"
+REORDER_REPLY = f"""에스쁘아 비벨벳 커버 쿠션 23.5호 페어 올리브 리필로 찾아봤어요.
+
+쿠팡: {COUPANG}
+네이버쇼핑: {NAVER}
+
+볼 것 세 가지예요.
+1) 23.5호 페어 올리브가 맞는지
+2) 리필인지
+3) 언제 도착하는지
+
+재고랑 도착일은 제가 확인하지 못했어요."""
+
+
+def _texts(body: dict) -> list[str]:
+    out = []
+    for o in body["template"]["outputs"]:
+        out.append(o["simpleText"]["text"] if "simpleText" in o else o["textCard"]["description"])
+    return out
+
+
+def _buttons(body: dict) -> list[tuple[str, str]]:
+    card = body["template"]["outputs"][-1]["textCard"]
+    return [(b["label"], b["webLinkUrl"]) for b in card["buttons"] if b["action"] == "webLink"]
+
+
+def test_links_become_buttons_and_leave_the_text() -> None:
+    body = kakao_reply_body(REORDER_REPLY)
+    assert len(body["template"]["outputs"]) == 1
+    assert _buttons(body) == [("쿠팡에서 보기", COUPANG), ("네이버에서 보기", NAVER)]
+    text = _texts(body)[0]
+    assert "http" not in text and "%EC" not in text
+    assert "쿠팡:" not in text and "네이버쇼핑:" not in text  # 링크만 있던 줄은 지운다
+    assert text.startswith("에스쁘아") and "볼 것 세 가지예요." in text
+
+
+def test_reply_without_links_is_unchanged() -> None:
+    plain = "에스쁘아 비벨벳 커버 쿠션 23.5호 페어 올리브 맞으세요?"
+    assert kakao_reply_body(plain) == kakao_text_body(plain)
+
+
+def test_long_reply_with_links_respects_kakao_limits() -> None:
+    long_body = "\n".join(f"{i}) 확인할 점이 있어요. 호수와 용량을 꼭 보세요." for i in range(40))
+    body = kakao_reply_body(f"{long_body}\n쿠팡: {COUPANG}")
+    outputs = body["template"]["outputs"]
+    assert len(outputs) <= 3                                   # 말풍선 최대 3개
+    assert len(outputs[-1]["textCard"]["description"]) <= 400  # textCard 단일형 400자
+    assert all("http" not in t for t in _texts(body))
+    assert _buttons(body) == [("쿠팡에서 보기", COUPANG)]
+
+
+def test_product_links_numbered_markdown_and_trailing_punctuation() -> None:
+    reply = ("1) 보디수트 · 18,900원\n2) 레오타드 · 24,500원\n"
+             "👉 1번 사러 가기: https://www.coupang.com/vp/products/111.\n"
+             "[2번 사러 가기](https://www.coupang.com/vp/products/222)\n"
+             "다른 곳: https://smartstore.naver.com/x/products/3 https://example.com/4")
+    body = kakao_reply_body(reply)
+    assert _buttons(body) == [
+        ("1번 쿠팡에서 보기", "https://www.coupang.com/vp/products/111"),
+        ("2번 쿠팡에서 보기", "https://www.coupang.com/vp/products/222"),
+        ("네이버에서 보기", "https://smartstore.naver.com/x/products/3"),
+    ]  # 버튼은 최대 3개
+    assert _texts(body) == ["1) 보디수트 · 18,900원\n2) 레오타드 · 24,500원"]
+
+
+def test_callback_sends_buttons() -> None:
+    async def run() -> None:
+        callbacks: list[dict] = []
+
+        async def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.host == "hermes.test":
+                return httpx.Response(200, json={"output_text": REORDER_REPLY})
+            callbacks.append(json.loads(req.content))
+            return httpx.Response(200)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app = create_app(Settings(hermes_api_url=HERMES), client=client)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bridge") as bridge:
+                await bridge.post("/kakao/skill", json={"userRequest": {"utterance": "네 리필이요",
+                                                                       "callbackUrl": CALLBACK, "user": {"id": "u"}}})
+                await asyncio.wait_for(asyncio.gather(*app.state.tasks), timeout=2)
+        await client.aclose()
+        assert _buttons(callbacks[0]) == [("쿠팡에서 보기", COUPANG), ("네이버에서 보기", NAVER)]
+
+    asyncio.run(run())

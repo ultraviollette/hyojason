@@ -167,6 +167,74 @@ def kakao_text_body(text: str) -> dict[str, Any]:
     return {"version": "2.0", "template": {"outputs": [{"simpleText": {"text": t}} for t in chunks]}}
 
 
+# ---------- 링크 → 버튼 ----------
+# 카카오 스킬 응답(콜백 포함)은 textCard 의 webLink 버튼을 지원한다 (세로 최대 3개, 버튼 문구 14자,
+# 단일 카드 title+description 최대 400자). quickReplies 는 message/block 만 돼서 링크에 못 쓴다.
+# Hermes 표기 규칙에 기대지 않고, 답변에서 http(s) URL 을 직접 찾아 버튼으로 옮긴다.
+
+_LINK_MD = re.compile(r"\[([^\]\n]{0,40})\]\((https?://[^\s)]+)\)")   # [라벨](url)
+_LINK_RAW = re.compile(r"<?(https?://[^\s<>\"']+)>?")
+_TRAIL = ".,;:!?)]}>'\"」』"
+_LEFTOVER_MAX = 14   # URL 을 뺀 뒤 이 길이 이하만 남은 줄("쿠팡:", "👉 1번 사러 가기:")은 지운다
+MAX_BUTTONS = 3
+CARD_DESC_MAX = 380  # textCard 단일형 400자 제한에 여유
+_SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "네이버"),
+          ("11st.co.kr", "11번가"), ("gmarket.co.kr", "G마켓"))
+
+
+def _site(url: str) -> str | None:
+    host = re.sub(r"^https?://", "", url).split("/", 1)[0].split("?", 1)[0].lower()
+    return next((name for dom, name in _SITES if host == dom or host.endswith("." + dom)), None)
+
+
+def split_links(text: str) -> tuple[str, list[str]]:
+    """본문에서 URL 을 빼고 (본문, [url…]) 을 돌려준다. URL 순서 유지, 중복 제거."""
+    urls: list[str] = []
+
+    def take(url: str) -> str:
+        url = url.rstrip(_TRAIL)
+        if url not in urls:
+            urls.append(url)
+        return ""
+
+    lines = []
+    for line in text.split("\n"):
+        stripped = _LINK_MD.sub(lambda m: take(m.group(2)), line)
+        stripped = _LINK_RAW.sub(lambda m: take(m.group(1)), stripped)
+        if stripped != line:  # 링크가 있던 줄
+            rest = stripped.strip().rstrip(":：-→👉 ").strip()
+            if len(re.sub(r"[\W_]", "", rest)) == 0 or len(rest) <= _LEFTOVER_MAX:
+                continue
+            stripped = rest
+        lines.append(stripped.rstrip())
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return body, urls
+
+
+def link_buttons(urls: list[str]) -> list[dict[str, str]]:
+    names = [_site(u) for u in urls[:MAX_BUTTONS]]
+    buttons = []
+    for i, (u, name) in enumerate(zip(urls, names)):
+        label = f"{name}에서 보기" if name else "링크 열기"
+        if names.count(name) > 1:
+            label = f"{names[:i + 1].count(name)}번 {label}"
+        buttons.append({"action": "webLink", "label": label, "webLinkUrl": u})
+    return buttons
+
+
+def kakao_reply_body(text: str) -> dict[str, Any]:
+    """Hermes 답변 → 카카오 응답. 링크가 없으면 simpleText 그대로, 있으면 본문은 글로, 링크는 버튼으로."""
+    body, urls = split_links(text)
+    if not urls:
+        return kakao_text_body(text)
+    chunks = split_text(body, CARD_DESC_MAX) if body else []
+    *head, last = chunks or ["아래 버튼을 눌러 열어 보세요."]
+    outputs: list[dict[str, Any]] = [{"simpleText": {"text": t}} for t in head[:2]]  # 말풍선 최대 3개
+    outputs.append({"textCard": {"description": last[:CARD_DESC_MAX], "buttons": link_buttons(urls),
+                                 "buttonLayout": "vertical"}})
+    return {"version": "2.0", "template": {"outputs": outputs}}
+
+
 # ---------- 사용자별 순서 보장 ----------
 
 class UserLocks:
@@ -233,7 +301,7 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         except Exception as e:  # 발화·URL 이 담길 수 있어 예외 메시지는 남기지 않는다
             reply, outcome = FAIL_MSG, f"hermes_error:{type(e).__name__}"
         try:
-            r = await c.post(callback_url, json=kakao_text_body(reply), timeout=CALLBACK_TIMEOUT_S)
+            r = await c.post(callback_url, json=kakao_reply_body(reply), timeout=CALLBACK_TIMEOUT_S)
             if not r.is_success:
                 outcome += f",callback_http_{r.status_code}"
         except Exception as e:
@@ -270,7 +338,7 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
             except Exception as e:
                 reply, outcome = NO_CALLBACK_MSG, f"sync_fail:{type(e).__name__}"
             _log("sync", outcome, started)
-            return JSONResponse(kakao_text_body(reply))
+            return JSONResponse(kakao_reply_body(reply))
 
         # 비동기 경로: 즉시 ack → 백그라운드에서 Hermes → callbackUrl 로 최종 답
         t = asyncio.create_task(callback_job(str(callback_url), user_id, text, images, started))
