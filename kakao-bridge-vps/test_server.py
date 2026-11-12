@@ -55,3 +55,22 @@ def test_immediate_ack_then_callback() -> None:
         await client.aclose()
 
     asyncio.run(run())
+
+
+def test_callback_url_token_not_logged(caplog) -> None:
+    """httpx INFO 로그('HTTP Request: POST <callbackUrl>')에 카카오 토큰이 찍히지 않는다."""
+    import logging
+
+    from server import configure_logging
+
+    configure_logging()
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+
+    async def run() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={})))
+        await client.post("http://kakao.test/callback/SECRET-TOKEN-123", json={})
+        await client.aclose()
+
+    with caplog.at_level(logging.INFO):  # 루트는 INFO. httpx 로거만 WARNING 이어야 통과한다
+        asyncio.run(run())
+    assert "SECRET-TOKEN-123" not in caplog.text

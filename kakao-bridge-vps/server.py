@@ -256,9 +256,15 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
     return app
 
 
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # httpx 는 INFO 로 요청 URL 을 찍는다. 카카오 callbackUrl 에 토큰이 들어 있어 WARNING 으로 낮춘다.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging()
     settings = Settings.from_env()
     uvicorn.run(create_app(settings), host="127.0.0.1", port=settings.port, access_log=False)
