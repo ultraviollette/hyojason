@@ -220,3 +220,25 @@ def test_callback_sends_buttons() -> None:
         assert _buttons(callbacks[0]) == [("쿠팡에서 보기", COUPANG), ("네이버에서 보기", NAVER)]
 
     asyncio.run(run())
+
+
+# make_search_links("에스쁘아 비벨벳 커버 쿠션 23.5호 페어 올리브 리필") 의 실제 출력 (2026-11-12)
+REAL_COUPANG = ("https://www.coupang.com/np/search?q=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EB%B9%84%EB%B2%A8%EB%B2%B3"
+                "%20%EC%BB%A4%EB%B2%84%20%EC%BF%A0%EC%85%98%2023.5%ED%98%B8%20%ED%8E%98%EC%96%B4%20%EC%98%AC%EB%A6%AC%EB%B8%8C"
+                "%20%EB%A6%AC%ED%95%84")
+REAL_NAVER = ("https://m.search.naver.com/search.naver?where=m_shop&query=%EC%97%90%EC%8A%A4%EC%81%98%EC%95%84%20%EB%B9%84"
+              "%EB%B2%A8%EB%B2%B3%20%EC%BB%A4%EB%B2%84%20%EC%BF%A0%EC%85%98%2023.5%ED%98%B8%20%ED%8E%98%EC%96%B4%20%EC%98%AC"
+              "%EB%A6%AC%EB%B8%8C%20%EB%A6%AC%ED%95%84")
+
+
+def test_button_url_is_byte_identical_to_tool_output() -> None:
+    """쿠팡 버튼이 '사용권한 없음'을 띄운 건(카카오 실사용) 브릿지가 URL 을 바꿔서가 아니다.
+    도구가 만든 URL 이 추출·직렬화를 거쳐도 글자 하나 다르지 않음을 고정한다."""
+    variants = [
+        f"찾아봤어요.\n\n쿠팡: {REAL_COUPANG}\n네이버쇼핑: {REAL_NAVER}",
+        f"찾아봤어요.\n쿠팡: {REAL_COUPANG}.\n네이버쇼핑: <{REAL_NAVER}>",       # 끝 마침표, 꺾쇠
+        f"찾아봤어요.\n[쿠팡]({REAL_COUPANG})\n[네이버]({REAL_NAVER})",           # 마크다운 링크
+    ]
+    for reply in variants:
+        wire = json.loads(json.dumps(kakao_reply_body(reply), ensure_ascii=False))  # 콜백 POST 본문 그대로
+        assert _buttons(wire) == [("쿠팡에서 보기", REAL_COUPANG), ("네이버에서 보기", REAL_NAVER)], reply
