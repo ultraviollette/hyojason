@@ -2,6 +2,7 @@
 
 도구:
   get_client_profile / save_client_profile / update_client_profile / resolve_client
+  make_search_links        정확한 상품명 → 쿠팡·네이버쇼핑 검색 링크 (페이지는 읽지 않음)
   search_products          네이버 쇼핑 검색 → (키 없으면) 쿠팡 임시 스크레이퍼 → (차단되면) mock
   check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
   log_recommendation       추천·선택 기록
@@ -14,6 +15,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from bs4 import BeautifulSoup
@@ -82,6 +84,24 @@ async def search_products(query: str, max_results: int = 20, sort: str = "sim") 
         r = await coupang_scrape.search_coupang(query, max_results=min(max_results, 10))
         items = r["items"] if not r.get("blocked") and r["items"] else await naver.search(query, max_results=max_results)
     return {"query": query, "count": len(items), "items": items}
+
+
+_SPACES = re.compile(r"\s+")
+COUPANG_SEARCH = "https://www.coupang.com/np/search?q="
+NAVER_SHOP_SEARCH = "https://m.search.naver.com/search.naver?where=m_shop&query="
+
+
+@mcp.tool()
+def make_search_links(query: str) -> dict[str, Any]:
+    """정확한 상품명(브랜드 + 제품명 + 호수/색상·용량·개수)으로 쿠팡·네이버쇼핑 검색 링크를 만든다.
+    링크 URL 은 직접 조립하지 말고 이 도구가 돌려준 것을 그대로 보낸다.
+    이 도구는 페이지를 읽지 않는다. 재고·가격·도착일은 확인되지 않은 상태다.
+    """
+    q = _SPACES.sub(" ", query or "").strip()
+    if not q:
+        return {"error": "상품명이 비어 있어요"}
+    enc = quote(q, safe="")
+    return {"query": q, "coupang": COUPANG_SEARCH + enc, "naver_shopping": NAVER_SHOP_SEARCH + enc}
 
 
 # ---------- 검증 ----------
