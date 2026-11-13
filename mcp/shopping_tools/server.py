@@ -3,7 +3,7 @@
 도구:
   resolve_client / get_client_profile / save_client_profile(정해진 필드만, 저장·수정 겸용)
   make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
-  search_products          네이버 쇼핑 검색 → (키 없으면) 쿠팡 임시 스크레이퍼 → (차단되면) mock
+  search_products          provider 구조: 쿠팡 파트너스 → 네이버 (키 있는 것만). 없으면 웹 검색 안내
   check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
   log_recommendation       추천·선택 기록
 
@@ -24,7 +24,7 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP as _Server
 
-from . import coupang_scrape, gates, naver, profiles
+from . import coupang_partners, gates, naver, profiles
 
 mcp = _Server("hyojason-shopping-tools")
 
@@ -88,22 +88,47 @@ def log_recommendation(client_id: str, request_json: str, chosen_json: str = "")
 
 # ---------- 검색 ----------
 
+async def _naver_provider(query: str, max_results: int, sort: str) -> dict[str, Any]:
+    return {"items": await naver.search(query, max_results=max_results, sort=sort), "error": None}
+
+
+async def _partners_provider(query: str, max_results: int, sort: str) -> dict[str, Any]:
+    return await coupang_partners.search(query, max_results=max_results)
+
+
+# (이름, 키가 있는지, 검색 함수). 키가 있는 provider 만 순서대로 시도한다. 키 없는 provider 는 요청하지 않는다.
+# 쿠팡 임시 스크레이퍼(coupang_scrape)는 키 없이 쿠팡에 자동 요청을 보내고 매번 403 이라 기본 경로에서 뺐다.
+SEARCH_PROVIDERS = (
+    ("coupang_partners", coupang_partners.has_credentials, _partners_provider),
+    ("naver_shopping", naver.has_credentials, _naver_provider),
+)
+
+
 @mcp.tool()
 async def search_products(query: str, max_results: int = 20, sort: str = "sim") -> dict[str, Any]:
     """상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date (네이버에만 적용).
     반환 items[].url을 check_product(product_url=…)에 넘길 것.
-    순서: 네이버 키 있으면 네이버 → 없으면 쿠팡 임시 스크레이퍼(source="coupang_scrape").
+    provider: 쿠팡 파트너스(COUPANG_ACCESS_KEY/SECRET_KEY 있을 때) → 네이버(키 있을 때).
+    affiliate=true 인 결과(쿠팡 파트너스 링크)를 보여 줄 때는 disclosure 문구를 반드시 함께 보낸다.
     실제 결과가 없으면 items=[] 와 fallback="web_search" 를 돌려준다. 그때는 SKILL 3-b(웹 검색 후보)로 간다.
     """
-    if naver.has_credentials():
-        items = await naver.search(query, max_results=max_results, sort=sort)
-    else:
-        r = await coupang_scrape.search_coupang(query, max_results=min(max_results, 10))
-        items = r["items"] if not r.get("blocked") else []
-    items = [x for x in items if x.get("source") != "mock"]  # 가짜 예시 상품은 절대 내보내지 않는다
-    if not items:
-        return {"query": query, "count": 0, "items": [], "fallback": "web_search", "next_step": NO_RESULT_NEXT_STEP}
-    return {"query": query, "count": len(items), "items": items}
+    tried = []
+    for name, ready, run in SEARCH_PROVIDERS:
+        if not ready():
+            continue
+        try:
+            r = await run(query, max_results, sort)
+        except Exception as e:  # provider 하나가 실패해도 다음으로 넘어간다
+            r = {"items": [], "error": f"exception:{type(e).__name__}"}
+        items = [x for x in r["items"] if x.get("source") != "mock"]  # 가짜 예시 상품은 절대 내보내지 않는다
+        if items:
+            out = {"query": query, "count": len(items), "items": items, "provider": name}
+            if any(x.get("affiliate") for x in items):
+                out["disclosure"] = coupang_partners.DISCLOSURE
+            return out
+        tried.append({"provider": name, "error": r.get("error") or "no_results"})
+    return {"query": query, "count": 0, "items": [], "fallback": "web_search", "next_step": NO_RESULT_NEXT_STEP,
+            "tried": tried}
 
 
 NO_RESULT_NEXT_STEP = (

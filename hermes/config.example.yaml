@@ -24,6 +24,8 @@ mcp_servers:
     env:
       HYOJASON_CLIENTS_DIR: <REPO>/clients
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY}
+      COUPANG_ACCESS_KEY: ${COUPANG_ACCESS_KEY}   # 쿠팡 파트너스 (승인 후)
+      COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY}
 
 # API 서버는 아직 활성화하지 않음 (조건 c: 미가동)
 # (platforms.api_server 블록 없음)
