@@ -89,15 +89,25 @@ def log_recommendation(client_id: str, request_json: str, chosen_json: str = "")
 async def search_products(query: str, max_results: int = 20, sort: str = "sim") -> dict[str, Any]:
     """상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date (네이버에만 적용).
     반환 items[].url을 check_product(product_url=…)에 넘길 것.
-    순서: 네이버 키 있으면 네이버 → 없으면 쿠팡 임시 스크레이퍼(source="coupang_scrape")
-    → 차단·빈 결과면 mock(source="mock", 실제 상품 아님).
+    순서: 네이버 키 있으면 네이버 → 없으면 쿠팡 임시 스크레이퍼(source="coupang_scrape").
+    실제 결과가 없으면 items=[] 와 fallback="web_search" 를 돌려준다. 그때는 SKILL 3-b(웹 검색 후보)로 간다.
     """
     if naver.has_credentials():
         items = await naver.search(query, max_results=max_results, sort=sort)
     else:
         r = await coupang_scrape.search_coupang(query, max_results=min(max_results, 10))
-        items = r["items"] if not r.get("blocked") and r["items"] else await naver.search(query, max_results=max_results)
+        items = r["items"] if not r.get("blocked") else []
+    items = [x for x in items if x.get("source") != "mock"]  # 가짜 예시 상품은 절대 내보내지 않는다
+    if not items:
+        return {"query": query, "count": 0, "items": [], "fallback": "web_search", "next_step": NO_RESULT_NEXT_STEP}
     return {"query": query, "count": len(items), "items": items}
+
+
+NO_RESULT_NEXT_STEP = (
+    "검색 API 결과가 없다. 여기서 끝내거나 링크를 달라고 하지 말고, web_search 로 상품 페이지 후보를 찾는다(SKILL 3-b). "
+    "상품 페이지만 최대 3개(검색 결과·블로그·광고·쿠팡 링크 제외), 후보마다 검색 결과에서 확인된 사실로 한 줄, "
+    "가격·재고·도착일은 보인 것만 말하고 '링크에서 꼭 확인하세요'. 하나도 못 찾았을 때만 못 찾았다고 말한다."
+)
 
 
 _SPACES = re.compile(r"\s+")
