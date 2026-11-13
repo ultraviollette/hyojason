@@ -33,23 +33,37 @@ mcp = _Server("hyojason-shopping-tools")
 
 @mcp.tool()
 def resolve_client(channel: str, channel_user_id: str) -> dict[str, Any]:
-    """채널 사용자 ID(kakao/telegram)로 client_id 를 찾는다. 없으면 found=false."""
+    """대화 시작 시 가장 먼저 부른다. 채널 사용자 ID(kakao/telegram)로 저장된 프로필을 찾는다.
+    channel_user_id 는 메시지 앞의 [channel=kakao user_id=...] 의 user_id 값이다.
+    반환: found, client_id(이후 다른 도구에 쓸 값), profile. found=false 면 처음 온 분이다."""
     cid = profiles.resolve_client_id(channel, channel_user_id)
-    return {"found": cid is not None, "client_id": cid}
+    return {"found": cid is not None, "client_id": cid, "profile": profiles.get_profile(cid) if cid else None}
 
 
 @mcp.tool()
 def get_client_profile(client_id: str) -> dict[str, Any]:
-    """클라이언트 프로필(치수·선호·금지 조건·쇼핑 규칙·이력)을 읽는다. 없으면 exists=false."""
+    """클라이언트 프로필(치수·선호·금지 조건·쇼핑 규칙·이력)을 읽는다. 없으면 exists=false.
+    client_id 자리에 카카오 user_id 를 넣어도 찾아 준다."""
     p = profiles.get_profile(client_id)
+    if p is None:  # 예전 지시대로 카카오 user_id 를 client_id 로 넘긴 경우
+        cid = profiles.resolve_client_id("kakao", client_id)
+        p = profiles.get_profile(cid) if cid else None
     return {"exists": p is not None, "profile": p}
 
 
 @mcp.tool()
-def save_client_profile(profile_json: str) -> dict[str, Any]:
-    """새 클라이언트 프로필 저장. profile_json 은 clients/_example.yaml 구조의 JSON 문자열."""
-    data = json.loads(profile_json)
-    return {"saved": True, "profile": profiles.save_profile(data)}
+def save_client_profile(profile_json: str, channel: str = "", channel_user_id: str = "") -> dict[str, Any]:
+    """새 클라이언트 프로필 저장. profile_json 은 clients/_example.yaml 구조의 JSON 문자열.
+    channel="kakao", channel_user_id=<[channel=kakao user_id=...] 의 user_id> 를 꼭 넘긴다.
+    그래야 다음 대화에서 resolve_client 로 찾을 수 있다. 이미 그 사용자 프로필이 있으면 새로 만들지 않고 합친다."""
+    data = profiles.normalize_channels(json.loads(profile_json), channel, channel_user_id)
+    key_channel = channel or ("kakao" if data["channels"].get("kakao_user_id") else "")
+    existing = profiles.resolve_client_id(key_channel, data["channels"].get(f"{key_channel}_user_id", "")) \
+        if key_channel else None
+    if existing:
+        data.pop("client_id", None)
+        return {"saved": True, "merged_into_existing": True, "profile": profiles.update_profile(existing, data)}
+    return {"saved": True, "merged_into_existing": False, "profile": profiles.save_profile(data)}
 
 
 @mcp.tool()

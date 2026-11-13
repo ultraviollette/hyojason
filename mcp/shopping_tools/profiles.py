@@ -36,9 +36,15 @@ def _load_all() -> list[dict[str, Any]]:
     return out
 
 
+def _channel_key(channel: str) -> str:
+    return f"{channel}_user_id" if channel != "telegram" else "telegram_chat_id"
+
+
 def resolve_client_id(channel: str, channel_user_id: str) -> str | None:
     """채널 사용자 ID로 client_id 를 찾는다. 없으면 None."""
-    key = f"{channel}_user_id" if channel != "telegram" else "telegram_chat_id"
+    if not channel_user_id:
+        return None
+    key = _channel_key(channel)
     for c in _load_all():
         if str((c.get("channels") or {}).get(key, "")) == str(channel_user_id):
             return c["client_id"]
@@ -53,8 +59,26 @@ def get_profile(client_id: str) -> dict[str, Any] | None:
         return yaml.safe_load(f) or {}
 
 
+def normalize_channels(profile: dict[str, Any], channel: str = "", channel_user_id: str = "") -> dict[str, Any]:
+    """채널 ID 를 resolve_client 가 찾는 자리(channels.<채널>_user_id)에 모은다.
+    모델이 최상위에 channel / channel_user_id / kakao_user_id 로 써도 옮긴다."""
+    channels = profile.get("channels") if isinstance(profile.get("channels"), dict) else {}
+    top_channel = str(profile.pop("channel", "") or "")
+    top_id = str(profile.pop("channel_user_id", "") or "")
+    if top_channel and top_id:
+        channels.setdefault(_channel_key(top_channel), top_id)
+    for k in ("kakao_user_id", "telegram_chat_id"):
+        if profile.get(k):
+            channels.setdefault(k, str(profile.pop(k)))
+    if channel and channel_user_id:
+        channels[_channel_key(channel)] = str(channel_user_id)  # 도구 인자가 가장 확실하다
+    profile["channels"] = channels
+    return profile
+
+
 def save_profile(profile: dict[str, Any]) -> dict[str, Any]:
     CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    normalize_channels(profile)
     cid = profile.get("client_id") or f"client-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     profile["client_id"] = cid
     profile.setdefault("history", [])

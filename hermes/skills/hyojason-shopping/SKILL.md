@@ -11,8 +11,11 @@ description: 어르신 클라이언트의 쇼핑 요청(말 또는 사진)을 �
 ## 절차
 
 ### 0. 프로필 읽기
-`get_client_profile(client_id)` 를 호출한다. client_id는 대화 메타데이터(채널 사용자 ID)로 전달된다.
-프로필이 없으면 SOUL.md의 "처음 온 분" 절차를 먼저 한다.
+메시지 앞의 `[channel=kakao user_id=…]` 에서 user_id 를 읽어 `resolve_client("kakao", user_id)` 를 **가장 먼저** 호출한다.
+- `found == true` 면 돌려준 `profile` 로 응대하고, 이후 도구에는 돌려준 `client_id` 를 쓴다. 다시 묻지 않는다.
+- `found == false` 면 처음 온 분이다. SOUL.md의 "처음 온 분" 절차를 하고, 저장은
+  `save_client_profile(profile_json, channel="kakao", channel_user_id=user_id)` 로 한다. channel·channel_user_id 를 빼면 다음 대화에서 못 찾는다.
+- 대화 기억에 "저장했다"가 없어도 프로필은 저장돼 있을 수 있다. 대화가 새로 시작돼도 반드시 resolve_client 로 확인한다.
 
 ### 1. 요청 해석
 - 글: 품목, 색, 용도, 기한, 예산을 뽑는다.
