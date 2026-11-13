@@ -14,7 +14,8 @@ description: 어르신 클라이언트의 쇼핑 요청(말 또는 사진)을 �
 메시지 앞의 `[channel=kakao user_id=…]` 에서 user_id 를 읽어 `resolve_client("kakao", user_id)` 를 **가장 먼저** 호출한다.
 - `found == true` 면 돌려준 `profile` 로 응대하고, 이후 도구에는 돌려준 `client_id` 를 쓴다. 다시 묻지 않는다.
 - `found == false` 면 처음 온 분이다. SOUL.md의 "처음 온 분" 절차를 하고, 저장은
-  `save_client_profile(profile_json, channel="kakao", channel_user_id=user_id)` 로 한다. channel·channel_user_id 를 빼면 다음 대화에서 못 찾는다.
+  `save_client_profile(channel="kakao", channel_user_id=user_id, display_name=…, top_size=…, bottom_size=…, shoe_size_mm=…, delivery_region=…, likes=[…], dislikes=[…], notes=[…])` 로 한다.
+  정해진 칸만 받는다. channel·channel_user_id 는 필수이고, 빼면 다음 대화에서 못 찾는다. 나중에 알게 된 정보도 같은 도구로 덧붙인다.
 - 대화 기억에 "저장했다"가 없어도 프로필은 저장돼 있을 수 있다. 대화가 새로 시작돼도 반드시 resolve_client 로 확인한다.
 
 ### 1. 요청 해석

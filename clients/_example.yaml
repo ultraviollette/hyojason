@@ -1,6 +1,8 @@
 # 클라이언트 프로필 양식
 # 실제 파일은 clients/<client_id>.yaml 로 만들고 git에 올리지 않는다 (.gitignore 처리됨).
-# client_id 는 채널 사용자 ID와 매핑된다 (channels 항목 참고).
+# 파일은 save_client_profile 도구만 쓴다. 키는 이 양식으로 코드가 강제한다 (mcp/shopping_tools/profiles.py).
+# client_id = 파일 이름 = <채널>-<채널 사용자 ID 의 sha256 앞 16자>  예: kakao-2cd5f0bbd4737468
+# 옛 형식 파일은 python -m shopping_tools.migrate_profiles 로 옮긴다.
 
 client_id: example-mom
 display_name: 어머니            # 에이전트가 부르는 호칭
@@ -37,4 +39,5 @@ shopping_rules:
 delivery:
   region: ""                   # 예: "지방 중소도시" — 도착일 계산용 (정확한 주소는 저장하지 않는다)
 
+notes: []                      # 위 칸에 없는 기타 메모 (예: "라인댄스를 함")
 history: []                    # log_recommendation 이 채움

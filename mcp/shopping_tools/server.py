@@ -1,7 +1,7 @@
 """효자손 MCP 서버.
 
 도구:
-  get_client_profile / save_client_profile / update_client_profile / resolve_client
+  resolve_client / get_client_profile / save_client_profile(정해진 필드만, 저장·수정 겸용)
   make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
   search_products          네이버 쇼핑 검색 → (키 없으면) 쿠팡 임시 스크레이퍼 → (차단되면) mock
   check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
@@ -33,53 +33,56 @@ mcp = _Server("hyojason-shopping-tools")
 
 @mcp.tool()
 def resolve_client(channel: str, channel_user_id: str) -> dict[str, Any]:
-    """대화 시작 시 가장 먼저 부른다. 채널 사용자 ID(kakao/telegram)로 저장된 프로필을 찾는다.
-    channel_user_id 는 메시지 앞의 [channel=kakao user_id=...] 의 user_id 값이다.
-    반환: found, client_id(이후 다른 도구에 쓸 값), profile. found=false 면 처음 온 분이다."""
+    """대화 시작 시 가장 먼저 부른다. 채널 + 사용자 ID 로 저장된 프로필을 찾는다.
+    channel 은 "kakao", channel_user_id 는 메시지 앞 [channel=kakao user_id=...] 의 user_id 값이다.
+    반환: found, client_id(log_recommendation 에 쓸 값), profile. found=false 면 처음 온 분이다."""
     cid = profiles.resolve_client_id(channel, channel_user_id)
     return {"found": cid is not None, "client_id": cid, "profile": profiles.get_profile(cid) if cid else None}
 
 
 @mcp.tool()
 def get_client_profile(client_id: str) -> dict[str, Any]:
-    """클라이언트 프로필(치수·선호·금지 조건·쇼핑 규칙·이력)을 읽는다. 없으면 exists=false.
+    """client_id 로 프로필을 읽는다. 없으면 exists=false. 보통은 resolve_client 를 쓴다.
     client_id 자리에 카카오 user_id 를 넣어도 찾아 준다."""
     p = profiles.get_profile(client_id)
-    if p is None:  # 예전 지시대로 카카오 user_id 를 client_id 로 넘긴 경우
+    if p is None:
         cid = profiles.resolve_client_id("kakao", client_id)
         p = profiles.get_profile(cid) if cid else None
     return {"exists": p is not None, "profile": p}
 
 
 @mcp.tool()
-def save_client_profile(profile_json: str, channel: str = "", channel_user_id: str = "") -> dict[str, Any]:
-    """새 클라이언트 프로필 저장. profile_json 은 clients/_example.yaml 구조의 JSON 문자열.
-    channel="kakao", channel_user_id=<[channel=kakao user_id=...] 의 user_id> 를 꼭 넘긴다.
-    그래야 다음 대화에서 resolve_client 로 찾을 수 있다. 이미 그 사용자 프로필이 있으면 새로 만들지 않고 합친다."""
-    data = profiles.normalize_channels(json.loads(profile_json), channel, channel_user_id)
-    key_channel = channel or ("kakao" if data["channels"].get("kakao_user_id") else "")
-    existing = profiles.resolve_client_id(key_channel, data["channels"].get(f"{key_channel}_user_id", "")) \
-        if key_channel else None
-    if existing:
-        data.pop("client_id", None)
-        return {"saved": True, "merged_into_existing": True, "profile": profiles.update_profile(existing, data)}
-    return {"saved": True, "merged_into_existing": False, "profile": profiles.save_profile(data)}
-
-
-@mcp.tool()
-def update_client_profile(client_id: str, patch_json: str) -> dict[str, Any]:
-    """프로필 일부 갱신(얕은 병합, 리스트는 합집합). 예: {"preferences": {"dislikes": ["목 파인 옷"]}}"""
-    patch = json.loads(patch_json)
-    return {"updated": True, "profile": profiles.update_profile(client_id, patch)}
+def save_client_profile(channel: str, channel_user_id: str, display_name: str = "", top_size: str = "",
+                        bottom_size: str = "", shoe_size_mm: str = "", height_cm: str = "", body_notes: str = "",
+                        delivery_region: str = "", likes: list[str] | None = None,
+                        dislikes: list[str] | None = None, brands_avoid: list[str] | None = None,
+                        price_sensitivity: str = "", notes: list[str] | None = None) -> dict[str, Any]:
+    """프로필을 저장하거나 고친다(같은 사용자면 합친다). 정해진 필드만 받는다. 다른 키는 만들지 않는다.
+    channel="kakao", channel_user_id=<[channel=kakao user_id=...] 의 user_id> 는 필수.
+    display_name: 부를 호칭(예: 어머니). top_size/bottom_size: 예 "55", "M". shoe_size_mm: 예 "235".
+    delivery_region: 배송 지역(시·군 정도, 정확한 주소는 받지 않는다). likes/dislikes: 좋아하는 것/싫어하는 것 목록.
+    notes: 위에 없는 기타 메모 목록(예: "라인댄스를 함"). 빈 값은 기존 값을 지우지 않고, 목록은 합친다."""
+    try:
+        profile, created = profiles.upsert_profile(
+            channel, channel_user_id, display_name=display_name, top_size=top_size, bottom_size=bottom_size,
+            shoe_size_mm=shoe_size_mm, height_cm=height_cm, body_notes=body_notes, delivery_region=delivery_region,
+            likes=likes, dislikes=dislikes, brands_avoid=brands_avoid, price_sensitivity=price_sensitivity,
+            notes=notes)
+    except ValueError as e:
+        return {"saved": False, "error": str(e)}
+    return {"saved": True, "created": created, "client_id": profile["client_id"], "profile": profile}
 
 
 @mcp.tool()
 def log_recommendation(client_id: str, request_json: str, chosen_json: str = "") -> dict[str, Any]:
-    """무엇을 요청받아 무엇을 추천/선택했는지 이력에 남긴다."""
-    profiles.append_history(client_id, {
-        "request": json.loads(request_json),
-        "chosen": json.loads(chosen_json) if chosen_json else None,
-    })
+    """무엇을 요청받아 무엇을 추천/선택했는지 이력에 남긴다. client_id 는 resolve_client 가 준 값."""
+    try:
+        profiles.append_history(client_id, {
+            "request": json.loads(request_json),
+            "chosen": json.loads(chosen_json) if chosen_json else None,
+        })
+    except ValueError as e:
+        return {"logged": False, "error": str(e)}
     return {"logged": True}
 
 

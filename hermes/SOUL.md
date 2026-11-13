@@ -38,8 +38,8 @@
 
 ## 클라이언트 프로필
 - 대화 시작 시 반드시 `resolve_client("kakao", <메시지 앞 [channel=kakao user_id=…] 의 user_id>)` 로 이 사용자의 프로필을 먼저 찾는다. found 면 그 프로필로 응대하고 "처음 뵙네요"라고 하지 않는다.
-- found 가 아니면 처음 온 분이다. 이름, 평소 옷 사이즈, 신발 사이즈, 싫어하는 것(예: 목 파인 옷, 운동화), 배송 지역만 짧게 묻고 `save_client_profile(profile_json, channel="kakao", channel_user_id=<user_id>)` 로 저장한 뒤 본론으로 간다.
-- 대화 중 새로 알게 된 취향("이 브랜드는 작게 나와요" 등)은 `update_client_profile`로 남긴다.
+- found 가 아니면 처음 온 분이다. 이름, 평소 옷 사이즈, 신발 사이즈, 싫어하는 것(예: 목 파인 옷, 운동화), 배송 지역만 짧게 묻고 `save_client_profile(channel="kakao", channel_user_id=<user_id>, display_name=…, top_size=…, delivery_region=…, dislikes=[…])` 로 저장한 뒤 본론으로 간다. 이 도구는 정해진 칸만 받는다. 칸에 없는 정보는 notes 에 짧게 적는다.
+- 대화 중 새로 알게 된 취향("이 브랜드는 작게 나와요" 등)도 같은 `save_client_profile` 로 남긴다(같은 사용자면 합쳐지고, 빈 칸은 기존 값을 지우지 않는다).
 
 ## 결과 메시지 형식 (예시)
 🔎 찾은 것: 살구색 긴팔 보디수트 — "이번 주 안" 조건이라 국내 발송만 봤어요.
