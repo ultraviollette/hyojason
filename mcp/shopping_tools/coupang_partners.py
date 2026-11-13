@@ -1,6 +1,9 @@
-"""쿠팡 파트너스 Open API 상품 검색 (승인 후 쓸 자리).
+"""미검증: 공식 문서 대조 전까지 사용 금지.
 
-COUPANG_ACCESS_KEY, COUPANG_SECRET_KEY 가 둘 다 있을 때만 호출한다. 키가 없으면 어떤 요청도 보내지 않는다.
+쿠팡 파트너스 Open API 상품 검색 (승인 후 쓸 자리). 이 파일은 공식 문서를 읽지 못한 채 기억으로 짰다.
+파트너스 콘솔의 API 문서와 대조해 고치기 전까지는 키가 있어도 호출하지 않는다.
+- 호출 조건: COUPANG_ACCESS_KEY, COUPANG_SECRET_KEY 가 둘 다 있고, COUPANG_PARTNERS_VERIFIED=1 일 때만.
+  COUPANG_PARTNERS_VERIFIED 는 공식 문서와 대조를 마친 뒤에만 1 로 둔다.
 
 ⚠️ 확인 필요: 아래 엔드포인트·서명 형식·응답 필드·호출 제한·대가성 문구는 공식 문서로 확인하지 못했다
    (partners.coupang.com, developers.coupang.com 이 자동 접근에 403). 작성자의 사전 지식 기준이다.
@@ -35,6 +38,15 @@ _calls: deque[float] = deque()
 
 def has_credentials() -> bool:
     return bool(os.environ.get("COUPANG_ACCESS_KEY") and os.environ.get("COUPANG_SECRET_KEY"))
+
+
+def is_verified() -> bool:
+    """공식 문서 대조를 마쳤다고 사람이 표시했는지. 미검증 코드는 키가 있어도 쓰지 않는다."""
+    return os.environ.get("COUPANG_PARTNERS_VERIFIED") == "1"
+
+
+def is_enabled() -> bool:
+    return has_credentials() and is_verified()
 
 
 def signed_date(now: datetime | None = None) -> str:
@@ -80,6 +92,8 @@ async def search(query: str, max_results: int = 10, *, transport: httpx.AsyncBas
     """반환: {"items": [...], "error": None | "no_credentials" | "rate_limited" | "http_<code>" | "api_<rCode>" | ...}"""
     if not has_credentials():
         return {"items": [], "error": "no_credentials"}  # 키 없이는 요청하지 않는다
+    if not is_verified():
+        return {"items": [], "error": "unverified"}      # 미검증: 공식 문서 대조 전까지 사용 금지
     now = time.monotonic()
     if _rate_limited(now):
         log.warning("coupang partners search skipped: hourly limit %d reached", SEARCH_PER_HOUR)

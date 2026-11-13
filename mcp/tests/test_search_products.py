@@ -20,7 +20,8 @@ PARTNERS_OK = {"rCode": "0", "rMessage": "", "data": {"landingUrl": "https://lin
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for k in ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET", "COUPANG_ACCESS_KEY", "COUPANG_SECRET_KEY"):
+    for k in ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET", "COUPANG_ACCESS_KEY", "COUPANG_SECRET_KEY",
+              "COUPANG_PARTNERS_VERIFIED"):
         monkeypatch.delenv(k, raising=False)
     coupang_partners._calls.clear()
 
@@ -37,9 +38,11 @@ def no_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "__init__", guarded)
 
 
-def _with_partners(monkeypatch, handler):
+def _with_partners(monkeypatch, handler, verified=True):
     monkeypatch.setenv("COUPANG_ACCESS_KEY", "ak-test")
     monkeypatch.setenv("COUPANG_SECRET_KEY", "sk-test")
+    if verified:
+        monkeypatch.setenv("COUPANG_PARTNERS_VERIFIED", "1")
     transport = httpx.MockTransport(handler)
     orig = coupang_partners.search
     monkeypatch.setattr(coupang_partners, "search",
@@ -112,3 +115,17 @@ def test_naver_used_when_only_naver_keys(monkeypatch, no_network) -> None:
     monkeypatch.setattr(server.naver, "search", fake)
     r = _search("생활한복")
     assert r["provider"] == "naver_shopping" and r["count"] == 1 and "disclosure" not in r
+
+
+@pytest.mark.parametrize("flag", [None, "", "0", "true"])
+def test_keys_without_verified_flag_never_call_partners(monkeypatch, no_network, flag) -> None:
+    """미검증 코드: 키가 있어도 COUPANG_PARTNERS_VERIFIED=1 이 아니면 쿠팡에 요청하지 않는다."""
+    calls = []
+    _with_partners(monkeypatch, lambda req: calls.append(1) or httpx.Response(200, json=PARTNERS_OK), verified=False)
+    if flag is not None:
+        monkeypatch.setenv("COUPANG_PARTNERS_VERIFIED", flag)
+    r = _search()
+    assert calls == [] and r["tried"] == [] and r["fallback"] == "web_search"
+    # search() 를 직접 불러도 막힌다
+    assert asyncio.run(coupang_partners.search("쿠션")) == {"items": [], "error": "unverified"}
+    assert calls == []

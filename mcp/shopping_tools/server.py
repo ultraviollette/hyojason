@@ -99,7 +99,7 @@ async def _partners_provider(query: str, max_results: int, sort: str) -> dict[st
 # (이름, 키가 있는지, 검색 함수). 키가 있는 provider 만 순서대로 시도한다. 키 없는 provider 는 요청하지 않는다.
 # 쿠팡 임시 스크레이퍼(coupang_scrape)는 키 없이 쿠팡에 자동 요청을 보내고 매번 403 이라 기본 경로에서 뺐다.
 SEARCH_PROVIDERS = (
-    ("coupang_partners", coupang_partners.has_credentials, _partners_provider),
+    ("coupang_partners", coupang_partners.is_enabled, _partners_provider),  # 키 + COUPANG_PARTNERS_VERIFIED=1
     ("naver_shopping", naver.has_credentials, _naver_provider),
 )
 
@@ -108,7 +108,7 @@ SEARCH_PROVIDERS = (
 async def search_products(query: str, max_results: int = 20, sort: str = "sim") -> dict[str, Any]:
     """상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date (네이버에만 적용).
     반환 items[].url을 check_product(product_url=…)에 넘길 것.
-    provider: 쿠팡 파트너스(COUPANG_ACCESS_KEY/SECRET_KEY 있을 때) → 네이버(키 있을 때).
+    provider: 쿠팡 파트너스(키 + COUPANG_PARTNERS_VERIFIED=1 일 때. 미검증이라 기본은 꺼짐) → 네이버(키 있을 때).
     affiliate=true 인 결과(쿠팡 파트너스 링크)를 보여 줄 때는 disclosure 문구를 반드시 함께 보낸다.
     실제 결과가 없으면 items=[] 와 fallback="web_search" 를 돌려준다. 그때는 SKILL 3-b(웹 검색 후보)로 간다.
     """
