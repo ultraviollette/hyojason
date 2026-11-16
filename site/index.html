@@ -42,6 +42,20 @@
   }
   ol.steps strong { display: block; }
   .note { color: var(--muted); font-size: 15px; margin: 0; }
+  .disclosure { color: var(--muted); font-size: 14px; margin: 24px 4px 0; }
+  .picks-section { margin-top: 8px; }
+  ul.picks { list-style: none; padding: 0; margin: 0; }
+  ul.picks li {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 0; border-top: 1px solid var(--line);
+  }
+  ul.picks li:first-child { border-top: 0; padding-top: 0; }
+  .pick-name { min-width: 0; overflow-wrap: anywhere; }
+  .pick-link {
+    flex: none; text-decoration: none; font-weight: 600; font-size: 15px; color: var(--card);
+    background: var(--accent); padding: 8px 14px; border-radius: 10px;
+  }
+  .pick-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   footer { margin-top: 28px; color: var(--muted); font-size: 14px; }
   footer dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
   footer dt { font-weight: 600; }
@@ -67,6 +81,20 @@
     </ol>
   </section>
 
+  <p class="disclosure">이 포스팅은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.</p>
+  <section aria-labelledby="picks" class="picks-section">
+    <h2 id="picks">효자손이 찾아 드린 물건</h2>
+    <ul class="picks">
+      <li><span class="pick-name">록시땅 버베나 핸드크림</span><a class="pick-link" href="https://link.coupang.com/a/iD1uACB7Xo" rel="sponsored noopener">보러 가기</a></li>
+      <li><span class="pick-name">프레티 리얼비타 하이드로겔 립 패치 30개입</span><a class="pick-link" href="https://link.coupang.com/a/iD1QZqL9RQ" rel="sponsored noopener">보러 가기</a></li>
+      <li><span class="pick-name">멕리듬 스팀 아이마스크 유자향 12개입</span><a class="pick-link" href="https://link.coupang.com/a/iD218FxhdY" rel="sponsored noopener">보러 가기</a></li>
+      <li><span class="pick-name">멕리듬 스팀 아이마스크 라벤더향 12매입</span><a class="pick-link" href="https://link.coupang.com/a/iD25ZxY9Iq" rel="sponsored noopener">보러 가기</a></li>
+      <li><span class="pick-name">산과들에 다크초콜릿아몬드 크리스마스 20봉 선물세트</span><a class="pick-link" href="https://link.coupang.com/a/iD3zLN9VFA" rel="sponsored noopener">보러 가기</a></li>
+      <li><span class="pick-name">그라노로 글루텐프리 스파게티 400g 3개</span><a class="pick-link" href="https://link.coupang.com/a/iD4lyPqfPU" rel="sponsored noopener">보러 가기</a></li>
+      <li><span class="pick-name">그라노로 글루텐프리 펜네 리가테 400g</span><a class="pick-link" href="https://link.coupang.com/a/iD4pm6H7fg" rel="sponsored noopener">보러 가기</a></li>
+    </ul>
+  </section>
+
   <section aria-labelledby="privacy">
     <h2 id="privacy">개인정보 처리 안내</h2>
     <p class="note">효자손은 대화 내용과, 사용자가 알려 준 호칭·사이즈·배송 지역을 상품 추천 목적으로만 저장합니다. 결제 정보는 받지 않습니다.</p>
@@ -76,9 +104,9 @@
     <strong>사업자 정보</strong>
     <dl>
       <dt>상호</dt><dd>미엘룬</dd>
-      <dt>대표자</dt><dd>[대표자명]</dd>
-      <dt>사업자등록번호</dt><dd>[번호]</dd>
-      <dt>문의 이메일</dt><dd>[이메일]</dd>
+      <dt>대표자</dt><dd>이향원</dd>
+      <dt>사업자등록번호</dt><dd>323-30-01627</dd>
+      <dt>문의 이메일</dt><dd>ultraviollette90@gmail.com</dd>
     </dl>
   </footer>
 </main>
