@@ -57,6 +57,8 @@
   }
   .pick-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   footer { margin-top: 28px; color: var(--muted); font-size: 14px; }
+  footer summary { font-weight: 600; cursor: pointer; }
+  footer summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
   footer dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
   footer dt { font-weight: 600; }
   footer dd { margin: 0; word-break: break-all; }
@@ -101,13 +103,15 @@
   </section>
 
   <footer>
-    <strong>사업자 정보</strong>
-    <dl>
-      <dt>상호</dt><dd>미엘룬</dd>
-      <dt>대표자</dt><dd>이향원</dd>
-      <dt>사업자등록번호</dt><dd>323-30-01627</dd>
-      <dt>문의 이메일</dt><dd>ultraviollette90@gmail.com</dd>
-    </dl>
+    <details>
+      <summary>사업자 정보</summary>
+      <dl>
+        <dt>상호</dt><dd>미엘룬</dd>
+        <dt>대표자</dt><dd>이향원</dd>
+        <dt>사업자등록번호</dt><dd>323-30-01627</dd>
+        <dt>문의 이메일</dt><dd>ultraviollette90@gmail.com</dd>
+      </dl>
+    </details>
   </footer>
 </main>
 </body>
