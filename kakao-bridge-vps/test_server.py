@@ -365,3 +365,41 @@ def test_bridge_restart_starts_new_conversation() -> None:
     _run_session(steps)
     _run_session(steps)  # 재시작
     assert convs[0] != convs[1]
+
+
+# ---------- 후보로 내면 안 되는 판매처: 크라우드펀딩 링크는 버튼으로 나가지 않는다 ----------
+from server import NO_LINK_MSG, is_blocked_link  # noqa: E402
+
+WADIZ = "https://www.wadiz.kr/web/campaign/detail/123456"
+TUMBLBUG = "https://tumblbug.com/hyojason-cushion"
+SHOP = "https://smartstore.naver.com/x/products/1"
+
+
+def test_crowdfunding_links_are_not_buttons_and_do_not_take_a_slot() -> None:
+    reply = ("후보예요.\n"
+             f"와디즈: {WADIZ}\n"
+             f"텀블벅: {TUMBLBUG}\n"
+             f"스마트스토어: {SHOP}\n"
+             "에스쁘아 공식몰: https://www.espoir.com/p/1\n"
+             "11번가: https://www.11st.co.kr/products/9")
+    body = kakao_reply_body(reply)
+    assert _buttons(body) == [("네이버에서 보기", SHOP),
+                              ("에스쁘아 공식몰에서 보기", "https://www.espoir.com/p/1"),
+                              ("11번가에서 보기", "https://www.11st.co.kr/products/9")]  # 막힌 2개는 3칸을 차지하지 않는다
+    wire = json.dumps(body, ensure_ascii=False)
+    assert "wadiz" not in wire and "tumblbug" not in wire
+
+
+def test_only_blocked_links_sends_text_without_the_urls() -> None:
+    body = kakao_reply_body(f"이 상품 같아요.\n와디즈: {WADIZ}\n[텀블벅]({TUMBLBUG})")
+    assert body == kakao_text_body("이 상품 같아요.")          # 버튼 없이, URL 도 글자로 새지 않는다
+    assert kakao_reply_body(f"와디즈: {WADIZ}") == kakao_text_body(NO_LINK_MSG)
+
+
+def test_blocked_domain_matching() -> None:
+    for url in (WADIZ, "https://wadiz.kr/x", "https://m.wadiz.kr/x", "HTTPS://WWW.WADIZ.KR/x",
+                "https://user@wadiz.kr/x", "https://wadiz.kr./x", TUMBLBUG, "https://www.tumblbug.com/x"):
+        assert is_blocked_link(url), url
+    for url in ("https://notwadiz.kr/x", "https://wadiz.kr.example.com/x", "https://example.com/wadiz.kr",
+                "https://mytumblbug.com/x", SHOP):
+        assert not is_blocked_link(url), url

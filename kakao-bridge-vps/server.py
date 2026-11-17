@@ -27,6 +27,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -184,6 +185,21 @@ _SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "�
           ("11st.co.kr", "11번가"), ("gmarket.co.kr", "G마켓"))
 
 
+# 후보로 내면 안 되는 판매처. SKILL "후보에서 빼는 판매처" 규칙이 새도 버튼으로는 나가지 않게 막는다.
+# 크라우드펀딩은 펀딩이 끝났으면 살 수 없고, 진행 중이어도 바로 살 수 있는 물건이 아니다.
+BLOCKED_LINK_DOMAINS = ("wadiz.kr", "tumblbug.com")
+NO_LINK_MSG = "보내 드릴 수 있는 링크를 찾지 못했어요. 다른 곳을 찾아 볼게요."
+
+
+def is_blocked_link(url: str) -> bool:
+    """wadiz.kr·tumblbug.com 과 그 하위 도메인. user@host, 대문자, 끝 점에도 속지 않게 hostname 으로 본다."""
+    try:
+        host = (urlsplit(url).hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in BLOCKED_LINK_DOMAINS)
+
+
 LABEL_MAX = 14       # 카카오 버튼 문구 최대 14자
 _LABEL_TAIL = "에서 보기"
 _NOT_A_SITE = re.compile(r"(사러|보기|링크|열기|여기|클릭|바로\s*가기|\d+\s*번)")
@@ -265,6 +281,9 @@ def kakao_reply_body(text: str) -> dict[str, Any]:
     body, links = split_links(text)
     if not links:
         return kakao_text_body(text)
+    links = [link for link in links if not is_blocked_link(link[0])]  # 막힌 링크는 버튼 칸도 차지하지 않는다
+    if not links:  # 막힌 링크만 있었다: 원문을 보내면 URL 이 글자로 새므로, URL 을 뺀 본문만 보낸다
+        return kakao_text_body(body or NO_LINK_MSG)
     chunks = split_text(body, CARD_DESC_MAX) if body else []
     *head, last = chunks or ["아래 버튼을 눌러 열어 보세요."]
     outputs: list[dict[str, Any]] = [{"simpleText": {"text": t}} for t in head[:2]]  # 말풍선 최대 3개
