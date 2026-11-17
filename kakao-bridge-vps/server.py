@@ -188,7 +188,7 @@ _SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "�
 # 후보로 내면 안 되는 판매처. SKILL "후보에서 빼는 판매처" 규칙이 새도 버튼으로는 나가지 않게 막는다.
 # 크라우드펀딩은 펀딩이 끝났으면 살 수 없고, 진행 중이어도 바로 살 수 있는 물건이 아니다.
 BLOCKED_LINK_DOMAINS = ("wadiz.kr", "tumblbug.com")
-NO_LINK_MSG = "보내 드릴 수 있는 링크를 찾지 못했어요. 다른 곳을 찾아 볼게요."
+NO_LINK_MSG = "보내 드릴 수 있는 링크가 없어요. 사고 싶은 물건을 한 번 더 말씀해 주세요."
 
 
 def is_blocked_link(url: str) -> bool:
