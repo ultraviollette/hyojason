@@ -38,7 +38,8 @@ from starlette.routing import Route
 
 log = logging.getLogger("hyojason.bridge")
 
-QUICK_ACK = "네, 찾아보고 있어요. 잠시만 기다려 주세요 🙂"
+# 카카오 관리자센터 블록의 Callback 설정 "응답대기 메시지"와 같은 문구로 맞춘다 (둘 중 어느 쪽이 보이는지 문서에 없음).
+QUICK_ACK = "가게 몇 군데 돌아보고 올게요. 2~3분쯤 걸려요.\n그동안 다른 일 보고 계세요. 찾으면 바로 알려 드릴게요 🐾"
 NO_CALLBACK_MSG = "지금은 답이 늦어지고 있어요. 블록에 Callback API 설정을 켜 주세요."
 FAIL_MSG = "죄송해요, 지금은 찾기가 어려워요. 잠시 뒤에 다시 말씀해 주세요."
 EMPTY_MSG = "답을 만들지 못했어요. 다시 한 번 말씀해 주세요."

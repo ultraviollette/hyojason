@@ -453,3 +453,7 @@ def test_numbered_labels_fit_14_chars_and_keep_number_after_blocked_link() -> No
     buttons = _buttons(kakao_reply_body(reply))
     assert buttons == [("1번 에스쁘아공식에서 보기", "https://www.espoir.com/p/1"), ("3번 11번가에서 보기", ST_S)]
     assert all(len(label) <= LABEL_MAX == 14 for label, _ in buttons)
+
+
+def test_quick_ack_text_is_exact() -> None:
+    assert QUICK_ACK == "가게 몇 군데 돌아보고 올게요. 2~3분쯤 걸려요.\n그동안 다른 일 보고 계세요. 찾으면 바로 알려 드릴게요 🐾"
