@@ -456,4 +456,4 @@ def test_numbered_labels_fit_14_chars_and_keep_number_after_blocked_link() -> No
 
 
 def test_quick_ack_text_is_exact() -> None:
-    assert QUICK_ACK == "가게 몇 군데 돌아보고 올게요. 2~3분쯤 걸려요.\n그동안 다른 일 보고 계세요. 찾으면 바로 알려 드릴게요 🐾"
+    assert QUICK_ACK == "가게 몇 군데 돌아보고 올게요. 길면 2~3분 걸려요.\n여쭤볼 게 있으면 먼저 물어볼게요. 다른 일 보고 계세요 🐾"
