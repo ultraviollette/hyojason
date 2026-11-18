@@ -182,7 +182,7 @@ _LEFTOVER_MAX = 14   # URL 을 뺀 뒤 이 길이 이하만 남은 줄("쿠팡:"
 MAX_BUTTONS = 3
 CARD_DESC_MAX = 380  # textCard 단일형 400자 제한에 여유
 _SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "네이버"),
-          ("11st.co.kr", "11번가"), ("gmarket.co.kr", "G마켓"))
+          ("11st.co.kr", "11번가"), ("gmarket.co.kr", "G마켓"), ("e-himart.co.kr", "하이마트"))
 
 
 # 후보로 내면 안 되는 판매처. SKILL "후보에서 빼는 판매처" 규칙이 새도 버튼으로는 나가지 않게 막는다.
@@ -200,7 +200,9 @@ def is_blocked_link(url: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in BLOCKED_LINK_DOMAINS)
 
 
-LABEL_MAX = 14       # 카카오 버튼 문구 최대 14자
+LABEL_MAX = 14       # 카카오 Button.label 제한 "버튼 14자(가로배열 2개 8자)". 세로 배치를 쓰므로 14자. 공백 포함해 센다
+# 링크 줄 맨 앞의 후보 번호: "1번 하이마트:", "👉 2번 사러 가기:", "3) 11번가:", "1. 공식몰:". "11번가"의 "11번"은 아니다.
+_CANDIDATE_NO = re.compile(r"^[^\w]*([1-9])\s*(?:번(?!가)|[).])\s*(.*)$", re.S)
 _LABEL_TAIL = "에서 보기"
 _NOT_A_SITE = re.compile(r"(사러|보기|링크|열기|여기|클릭|바로\s*가기|\d+\s*번)")
 _HOST_PREFIX = re.compile(r"^(www|m|mobile|shop|store|mall)\.")
@@ -237,8 +239,16 @@ def site_name(url: str, hint: str | None = None) -> str:
     return _known_site(url) or (hint and _site_hint(hint)) or _host_name(url)
 
 
+def candidate_number(hint: str | None) -> tuple[int | None, str | None]:
+    """링크 줄 앞부분에서 후보 번호를 읽는다. (번호, 번호를 뺀 나머지). 번호가 없으면 (None, hint)."""
+    if not hint:
+        return None, hint
+    m = _CANDIDATE_NO.match(hint)
+    return (int(m.group(1)), m.group(2).strip() or None) if m else (None, hint)
+
+
 def split_links(text: str) -> tuple[str, list[tuple[str, str | None]]]:
-    """본문에서 URL 을 빼고 (본문, [(url, 그 줄에 적힌 이름)…]) 을 돌려준다. URL 순서 유지, 중복 제거."""
+    """본문에서 URL 을 빼고 (본문, [(url, 그 줄에 적힌 글)…]) 을 돌려준다. URL 순서 유지, 중복 제거."""
     links: list[tuple[str, str | None]] = []
 
     lines = []
@@ -261,18 +271,24 @@ def split_links(text: str) -> tuple[str, list[tuple[str, str | None]]]:
     return body, links
 
 
-def _fit(name: str, prefix: str = "") -> str:
-    room = LABEL_MAX - len(prefix) - len(_LABEL_TAIL)
-    return f"{prefix}{name[:max(room, 1)]}{_LABEL_TAIL}"
+def _fit(name: str, prefix: str = "", suffix: str = "") -> str:
+    room = LABEL_MAX - len(prefix) - len(_LABEL_TAIL) - len(suffix)
+    return f"{prefix}{name[:max(room, 1)]}{_LABEL_TAIL}{suffix}"
 
 
 def link_buttons(links: list[tuple[str, str | None]]) -> list[dict[str, str]]:
-    links = links[:MAX_BUTTONS]
-    names = [site_name(u, h) for u, h in links]
-    buttons = []
-    for i, ((u, _), name) in enumerate(zip(links, names)):
-        prefix = f"{names[:i + 1].count(name)}번 " if names.count(name) > 1 else ""
-        buttons.append({"action": "webLink", "label": _fit(name, prefix), "webLinkUrl": u})
+    """버튼 이름표 = "<후보 번호>번 <사이트>에서 보기".
+    후보 번호는 링크 줄에 적힌 번호(SKILL: "1번 하이마트: URL")만 쓴다. 번호가 없는 링크에는 번호를 지어내지 않는다
+    (예전에는 같은 쇼핑몰 안의 순번을 "1번/2번"으로 붙여 후보 번호처럼 보였다). 이름표가 겹치면 뒤에 " 2"를 붙인다."""
+    buttons, seen = [], []
+    for url, hint in links[:MAX_BUTTONS]:
+        number, rest = candidate_number(hint)
+        name = site_name(url, rest)
+        prefix = f"{number}번 " if number else ""
+        key = (prefix, name)
+        suffix = f" {seen.count(key) + 1}" if key in seen else ""
+        seen.append(key)
+        buttons.append({"action": "webLink", "label": _fit(name, prefix, suffix), "webLinkUrl": url})
     return buttons
 
 

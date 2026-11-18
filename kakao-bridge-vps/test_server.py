@@ -270,13 +270,13 @@ def test_labels_fit_kakao_14_char_limit() -> None:
     long_name = kakao_reply_body("후보예요.\n에스쁘아공식온라인몰: https://www.espoir.com/p/1")
     assert _buttons(long_name) == [("에스쁘아공식온라인에서 보기", "https://www.espoir.com/p/1")]
 
-    # 같은 사이트가 여럿이면 번호를 붙이고, 번호까지 넣어 14자에 맞춘다
+    # 후보 번호는 링크 줄에 적힌 것만 쓰고, 번호까지 넣어 14자에 맞춘다. 번호 없는 링크에는 지어내지 않는다.
     reply = ("후보예요.\n"
-             "아주아주긴브랜드공식온라인몰: https://a.example.com/p/1\n"   # 10자 넘는 이름은 안 쓰고 도메인으로
-             "[2번 사러 가기](https://b.example.com/p/2)\n"            # 안내 문구도 이름으로 안 씀
-             "https://b.example.com/p/3")
+             "아주아주긴브랜드공식온라인몰: https://a.example.com/p/1\n"   # 10자 넘는 이름은 안 쓰고 도메인으로, 번호 없음
+             "[2번 사러 가기](https://b.example.com/p/2)\n"            # 후보 번호 2, 안내 문구는 이름으로 안 씀
+             "https://b.example.com/p/3")                              # 번호 없음, 앞 이름표와 겹쳐 " 2"
     labels = [label for label, _ in _buttons(kakao_reply_body(reply))]
-    assert labels == ["1번 exampl에서 보기", "2번 exampl에서 보기", "3번 exampl에서 보기"]
+    assert labels == ["example에서 보기", "2번 exampl에서 보기", "example에서 보기 2"]
     assert all(len(label) <= 14 for label in labels)
 
 
@@ -403,3 +403,53 @@ def test_blocked_domain_matching() -> None:
     for url in ("https://notwadiz.kr/x", "https://wadiz.kr.example.com/x", "https://example.com/wadiz.kr",
                 "https://mytumblbug.com/x", SHOP):
         assert not is_blocked_link(url), url
+
+
+# ---------- 버튼 이름표는 본문 후보 번호로 시작한다 ----------
+from server import LABEL_MAX, candidate_number  # noqa: E402
+
+HIMART = "https://www.e-himart.co.kr/app/goods/goodsDetail?goodsNo=0001"
+ST_M1 = "https://www.11st.co.kr/products/1111"
+ST_S = "https://www.11st.co.kr/products/2222"
+KETTLE_BODY = ("전기 포트 세 개 찾았어요.\n"
+               "1) 위즈웰 접이식 전기 포트\n2) 보아르 이지전기포트M1\n3) 보아르 이지전기포트S 500ml\n"
+               "가격·재고·도착일은 링크에서 꼭 확인하세요.\n\n")
+
+
+def test_real_case_buttons_start_with_candidate_number() -> None:
+    """2026-11-18 실사용: 본문 후보 1~3인데 버튼이 'e-himart에서 보기', '1번 11번가', '2번 11번가'로 나갔다
+    (같은 쇼핑몰 안의 순번). 링크 줄에 후보 번호를 적으면 그 번호로 이름표가 시작한다."""
+    reply = KETTLE_BODY + f"1번 하이마트: {HIMART}\n2번 11번가: {ST_M1}\n3번 11번가: {ST_S}"
+    body = kakao_reply_body(reply)
+    assert _buttons(body) == [("1번 하이마트에서 보기", HIMART), ("2번 11번가에서 보기", ST_M1),
+                              ("3번 11번가에서 보기", ST_S)]
+    assert "하이마트:" not in _texts(body)[0] and "3) 보아르 이지전기포트S 500ml" in _texts(body)[0]
+
+
+def test_without_candidate_numbers_no_number_is_invented() -> None:
+    """링크 줄에 번호가 없으면(오늘 실제 답처럼) 후보 번호를 추측하지 않는다. 같은 이름표만 ' 2'로 구분한다."""
+    reply = KETTLE_BODY + f"하이마트: {HIMART}\n11번가: {ST_M1}\n11번가: {ST_S}"
+    labels = [label for label, _ in _buttons(kakao_reply_body(reply))]
+    assert labels == ["하이마트에서 보기", "11번가에서 보기", "11번가에서 보기 2"]
+    assert not any(label[0].isdigit() and "번 " in label[:3] for label in labels)
+
+
+def test_candidate_number_formats_and_11st_is_not_a_number() -> None:
+    assert candidate_number("1번 하이마트") == (1, "하이마트")
+    assert candidate_number("👉 2번 사러 가기") == (2, "사러 가기")
+    assert candidate_number("3) 11번가") == (3, "11번가")
+    assert candidate_number("1. 에스쁘아 공식몰") == (1, "에스쁘아 공식몰")
+    assert candidate_number("2번") == (2, None)
+    assert candidate_number("11번가") == (None, "11번가")     # 11번가의 '11번'은 후보 번호가 아니다
+    assert candidate_number("하이마트") == (None, "하이마트")
+    assert candidate_number(None) == (None, None)
+
+
+def test_numbered_labels_fit_14_chars_and_keep_number_after_blocked_link() -> None:
+    reply = ("후보예요.\n"
+             "1번 에스쁘아공식온라인몰: https://www.espoir.com/p/1\n"     # 이름 10자 → 번호까지 넣어 14자에 맞춤
+             "2번 와디즈: https://www.wadiz.kr/web/campaign/detail/1\n"  # 막힌 링크: 버튼 없음, 번호는 당기지 않는다
+             f"3번 11번가: {ST_S}")
+    buttons = _buttons(kakao_reply_body(reply))
+    assert buttons == [("1번 에스쁘아공식에서 보기", "https://www.espoir.com/p/1"), ("3번 11번가에서 보기", ST_S)]
+    assert all(len(label) <= LABEL_MAX == 14 for label, _ in buttons)
