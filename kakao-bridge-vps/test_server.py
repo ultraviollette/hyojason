@@ -8,8 +8,9 @@ from server import BRIDGE_NOTE, CLOSE_MSG, QUICK_ACK, RESET_DROP_MSG, Settings, 
 
 HERMES = "http://hermes.test"
 CALLBACK = "http://kakao.test/callback/abc"
-# 메시지를 합치는 대기 시간(실제 4초/최대 10초)을 테스트에서는 짧게 줄인다. 동작 순서는 같다.
-FAST = dict(wait_first_text_s=0.02, wait_first_photo_s=0.02, wait_more_s=0.02, wait_max_s=0.1)
+# 메시지를 합치는 대기 시간(실제 글 4초/최대 10초, 사진만 12초/최대 15초)을 테스트에서는 짧게 줄인다. 동작 순서는 같다.
+FAST = dict(wait_first_text_s=0.02, wait_first_photo_s=0.02, wait_more_s=0.02, wait_max_text_s=0.1,
+            wait_max_photo_s=0.1)
 
 
 def test_immediate_ack_then_callback() -> None:
@@ -729,3 +730,99 @@ def test_shape_log_only_for_photo_messages(caplog, tmp_path) -> None:
 
 def test_utterance_shape_json_like() -> None:
     assert utterance_shape('{"secureUrls":"List(http://x)"}') == '{"aaaaaaaaaa":"aaaa(aaaa://a)"}'
+
+
+
+# ---------- 사진 utterance 가 이미지 주소일 때 (23e409b 형태 로그: starts_url=1, has_param_image=1) ----------
+from server import LINKS_ONLY_BODY, strip_image_utterance  # noqa: E402
+
+
+def _photo_url_utterance(uid: str, n: int) -> dict:
+    m = _photo(uid, n)
+    m["userRequest"]["utterance"] = PHOTO_URL              # 실제 로그 모양: 주소 그 자체
+    return m
+
+
+def test_strip_image_utterance_only_when_it_is_or_contains_the_param_image() -> None:
+    assert strip_image_utterance(PHOTO_URL, [PHOTO_URL]) == ""
+    assert strip_image_utterance(f"{PHOTO_URL} 이거 찾아줘", [PHOTO_URL]) == "이거 찾아줘"
+    other = "https://www.11st.co.kr/products/1"
+    assert strip_image_utterance(other, [PHOTO_URL]) == other            # params 와 다른 주소는 그대로
+    assert strip_image_utterance(PHOTO_URL, []) == PHOTO_URL             # params 에 사진이 없으면 그대로
+    assert strip_image_utterance("네이비로 찾아줘", [PHOTO_URL]) == "네이비로 찾아줘"
+
+
+def test_photo_url_utterance_goes_to_hermes_as_photo_only() -> None:
+    h = _Hermes(["노란 바늘이 있는 흰색 탁상시계로 보여요. 맞으세요?"])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=_photo_url_utterance("mom", 1))
+
+    _run(h, steps)
+    assert len(h.calls) == 1
+    assert h.calls[0]["text"].split("\n", 1)[1] == "(사진만 보냄)"
+    assert PHOTO_URL not in h.calls[0]["text"]                           # 주소 글자는 글로 가지 않는다
+    assert h.calls[0]["images"] == [PHOTO_URL]                           # 사진은 그대로 input_image 로
+
+
+def test_photo_url_utterance_merged_shows_as_photo() -> None:
+    h = _Hermes(["1번 11번가: https://www.11st.co.kr/products/1"])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=_photo_url_utterance("mom", 1))
+        await asyncio.sleep(0.01)
+        await bridge.post("/kakao/skill", json=_text("mom", "네이비로 찾아줘", 2))
+
+    _run(h, steps, wait_first_photo_s=0.05, wait_more_s=0.05)
+    assert h.calls[0]["text"].split("\n", 1)[1] == "(이어서 보낸 메시지 2개)\n1) (사진)\n2) 네이비로 찾아줘"
+
+
+# ---------- 사진만 온 경우의 대기 ----------
+
+def test_default_waits() -> None:
+    d = Settings()
+    assert (d.wait_first_photo_s, d.wait_max_photo_s) == (12.0, 15.0)
+    assert (d.wait_first_text_s, d.wait_max_text_s, d.wait_more_s) == (4.0, 10.0, 4.0)
+
+
+def test_photo_url_utterance_waits_photo_time_for_late_text() -> None:
+    # 실제 값의 1/100: 사진 대기 0.12초 / 최대 0.15초, 글 대기 0.04초. 글이 사진 0.08초 뒤에 온다(실사용 6~11초 사례).
+    h = _Hermes(["1번 11번가: https://www.11st.co.kr/products/1"])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=_photo_url_utterance("mom", 1))
+        await asyncio.sleep(0.08)
+        await bridge.post("/kakao/skill", json=_text("mom", "네이비로 찾아줘", 2))
+
+    _run(h, steps, wait_first_text_s=0.04, wait_first_photo_s=0.12, wait_more_s=0.04,
+         wait_max_text_s=0.1, wait_max_photo_s=0.15)
+    assert len(h.calls) == 1                                             # 사진 턴을 따로 돌리지 않는다
+    assert h.calls[0]["images"] == [PHOTO_URL]
+
+
+def test_text_start_keeps_short_wait() -> None:
+    h = _Hermes(["어느 색으로 할까요?", "1번 11번가: https://www.11st.co.kr/products/1"])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=_text("mom", "텀블러 찾아줘", 1))
+        await asyncio.sleep(0.08)                                        # 글 대기(0.04초)는 지났다
+        await bridge.post("/kakao/skill", json=_text("mom", "네이비", 2))
+
+    _run(h, steps, wait_first_text_s=0.04, wait_first_photo_s=0.12, wait_more_s=0.04,
+         wait_max_text_s=0.1, wait_max_photo_s=0.15)
+    assert len(h.calls) == 2                                             # 글로 시작하면 4초 대기 그대로
+
+
+# ---------- 링크만 있는 답 ----------
+
+def test_links_only_reply_gets_default_body_and_is_flagged(caplog) -> None:
+    import logging
+    h = _Hermes(["11번가: https://www.11st.co.kr/products/1"])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=_text("mom", "응 그거 맞아", 1))
+
+    with caplog.at_level(logging.INFO, logger="hyojason.bridge"):
+        _run(h, steps)
+    assert h.said("/cb/mom/1") == LINKS_ONLY_BODY == "아래 버튼을 눌러 열어 보세요."
+    assert any("links_only" in r.getMessage() for r in caplog.records if "path=callback" in r.getMessage())

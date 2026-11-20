@@ -35,16 +35,38 @@ def _view_response(cid: str | None) -> tuple[dict[str, Any] | None, int]:
     return profiles.agent_view(profiles.get_profile(cid) if cid else None)
 
 
+# 주로 사는 곳에 쿠팡이 있을 때 후보 답에 걸 규칙. 23e409b 실사용: "쿠팡도 좋고 네이버도 좋아"라고 답했는데
+# 그 뒤 후보에 쿠팡 검색어 줄이 없었다. 글 규칙("쿠팡이면 …")에만 맡기지 않고 도구 응답에 붙인다(ask_payment_note 와 같은 방식).
+COUPANG_FIRST_NOTE = ("주로 사는 곳에 쿠팡이 있다. 후보를 드리는 답에서는 make_search_links(정확한 상품명)의 coupang_query 로 "
+                      "\"쿠팡은 제가 직접 볼 수 없어서 검색어를 드려요. 쿠팡 앱에서는 '<coupang_query>'로 검색해 보세요\" 줄을 "
+                      "답 맨 앞에 두고, 다른 곳 후보를 이어서 보여 준다. '쿠팡에서는 못 찾았어요'라고 말하지 않는다.")
+
+
+def _place_rules(profile: dict[str, Any] | None) -> list[str]:
+    return [COUPANG_FIRST_NOTE] if profiles.has_coupang(profile) else []
+
+
+def _with_place_rules(out: dict[str, Any], profile: dict[str, Any] | None) -> dict[str, Any]:
+    rules = _place_rules(profile)
+    if rules:
+        out["place_rules"] = rules
+    return out
+
+
 @mcp.tool()
 def resolve_client(channel: str, channel_user_id: str) -> dict[str, Any]:
     """대화 시작 시 가장 먼저 부른다. 채널 + 사용자 ID 로 저장된 프로필을 찾는다.
     channel 은 "kakao", channel_user_id 는 메시지 앞 [channel=kakao user_id=...] 의 user_id 값이다.
-    반환: found, client_id(record_item 에 쓸 값), profile, items_omitted.
+    반환: found, client_id(record_item 에 쓸 값), profile, items_omitted, place_rules(있을 때만).
     profile.items 는 고르신 것(chosen) 전부 + 찾아 드린 것(found) 최근 10건만 담는다(최신이 앞).
-    items_omitted 는 빼고 돌려준 오래된 found 건수. found=false 면 처음 온 분이다."""
+    지난 기록을 확인할 때는 그 item 의 confirm_phrase 를 그대로 쓴다(고르심/찾아 드림 구분이 들어 있다).
+    item.url 이 있으면 확인받은 뒤 다시 검색하지 않고 그 주소를 드린다(seen_price_krw 는 그 날짜에 본 가격).
+    place_rules 가 있으면 후보를 드리는 답에서 반드시 따른다. items_omitted 는 빼고 돌려준 오래된 found 건수.
+    found=false 면 처음 온 분이다."""
     cid = profiles.resolve_client_id(channel, channel_user_id)
     view, omitted = _view_response(cid)
-    return {"found": cid is not None, "client_id": cid, "profile": view, "items_omitted": omitted}
+    return _with_place_rules({"found": cid is not None, "client_id": cid, "profile": view, "items_omitted": omitted},
+                             view)
 
 
 @mcp.tool()
@@ -53,7 +75,7 @@ def get_client_profile(client_id: str) -> dict[str, Any]:
     client_id 자리에 카카오 user_id 를 넣어도 찾아 준다. items 는 resolve_client 와 같은 방식으로 줄여 돌려준다."""
     cid = client_id if profiles.get_profile(client_id) is not None else profiles.resolve_client_id("kakao", client_id)
     view, omitted = _view_response(cid)
-    return {"exists": view is not None, "profile": view, "items_omitted": omitted}
+    return _with_place_rules({"exists": view is not None, "profile": view, "items_omitted": omitted}, view)
 
 
 @mcp.tool()
@@ -62,12 +84,16 @@ def save_client_profile(channel: str, channel_user_id: str, display_name: str = 
                         delivery_region: str = "", likes: list[str] | None = None,
                         dislikes: list[str] | None = None, brands_avoid: list[str] | None = None,
                         price_sensitivity: str = "", notes: list[str] | None = None,
-                        payment_place: str = "", payment_by: str = "") -> dict[str, Any]:
+                        payment_places: list[str] | None = None, payment_by: str = "",
+                        payment_place: str = "") -> dict[str, Any]:
     """프로필을 저장하거나 고친다(같은 사용자면 합친다). 정해진 필드만 받는다. 다른 키는 만들지 않는다.
     channel="kakao", channel_user_id=<[channel=kakao user_id=...] 의 user_id> 는 필수.
     display_name: 부를 호칭(예: 어머니). top_size/bottom_size: 예 "55", "M". shoe_size_mm: 예 "235".
     delivery_region: 배송 지역(시·군 정도, 정확한 주소는 받지 않는다). likes/dislikes: 좋아하는 것/싫어하는 것 목록.
-    payment_place: 주로 사는 곳(자유 입력, 20자 이내, 예: "쿠팡"). payment_by: "self"(본인) | "family"(다른 가족).
+    payment_places: 주로 사는 곳 목록. 여러 곳을 말하면 모두 넣는다(가게마다 20자 이내, 5곳까지, 예: ["쿠팡", "네이버"]).
+    새로 말하면 이전 목록을 바꾼다. payment_place 는 옛 한 줄 형식("쿠팡, 네이버")이며 나눠서 넣는다.
+    payment_by: "self"(본인) | "family"(다른 가족).
+    saved=false 면 저장되지 않은 것이다. 그때는 "기억해 둘게요"라고 말하지 않는다.
     결제 방식은 물어본 적이 있든 없든(asked_on), 사용자가 말하면 언제든 저장한다.
     결제 정보(카드·계좌)와 다른 사람 연락처는 받지 않는다.
     notes: 위에 없는 기타 메모 목록(예: "라인댄스를 함"). 빈 값은 기존 값을 지우지 않고, 목록은 합친다."""
@@ -76,31 +102,36 @@ def save_client_profile(channel: str, channel_user_id: str, display_name: str = 
             channel, channel_user_id, display_name=display_name, top_size=top_size, bottom_size=bottom_size,
             shoe_size_mm=shoe_size_mm, height_cm=height_cm, body_notes=body_notes, delivery_region=delivery_region,
             likes=likes, dislikes=dislikes, brands_avoid=brands_avoid, price_sensitivity=price_sensitivity,
-            notes=notes, payment_place=payment_place, payment_by=payment_by)
+            notes=notes, payment_place=payment_place, payment_by=payment_by, payment_places=payment_places)
     except ValueError as e:
         return {"saved": False, "error": str(e)}
     view, _ = profiles.agent_view(profile)
-    return {"saved": True, "created": created, "client_id": profile["client_id"], "profile": view}
+    return _with_place_rules({"saved": True, "created": created, "client_id": profile["client_id"], "profile": view},
+                             view)
 
 
 @mcp.tool()
 def record_item(client_id: str, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
-                seller: str = "", seen_price_krw: int | None = None) -> dict[str, Any]:
+                seller: str = "", seen_price_krw: int | None = None, url: str = "") -> dict[str, Any]:
     """찾아 드린 물건(status="found")과 사용자가 고른 물건(status="chosen")을 프로필에 남긴다. client_id 는 resolve_client 가 준 값.
     name: 제품 이름(필수). brand: 브랜드(모르면 비움). options: 그 물건에서 갈리는 것 {"용량": "240ml", "색": "네이비"} (6개까지).
-    seller: 판매처 이름. seen_price_krw: 그때 본 가격(원). 검색 결과나 페이지에 적혀 있던 경우만, 모르면 비운다.
+    seller: 판매처 이름. seen_price_krw: 그때 본 실제 판매가(원, 줄 그어진 정가가 아님). 적혀 있던 경우만, 모르면 비운다.
+    url: 답에 링크로 드린 상품 페이지 주소(도구·검색 결과가 준 그대로). 검색 결과 페이지 주소는 넣지 않는다.
+    크라우드펀딩(와디즈·텀블벅) 주소는 거절된다(후보가 아니다).
     결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
     같은 날 같은 브랜드·이름·옵션의 found 를 chosen 으로 남기면 그 항목이 chosen 으로 바뀐다. 최근 50건까지 보관.
     ask_payment 가 true 일 때만 이번 답 끝에 결제 방식 질문을 붙인다. 도구가 평생 한 번만 true 를 준다.
     결제 질문은 후보와 링크를 모두 쓴 답의 맨 끝에만 붙인다. 결제 질문만 있는 답은 쓰지 않는다(ask_payment_note)."""
     try:
         item, ask_payment = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
-                                                 seller=seller, seen_price_krw=seen_price_krw)
+                                                 seller=seller, seen_price_krw=seen_price_krw, url=url)
     except ValueError as e:
         return {"recorded": False, "error": str(e), "ask_payment": False}
     out = {"recorded": True, "item": item, "ask_payment": ask_payment}
     if ask_payment:  # 11/20 실사용: 후보를 기록하고도 답에 결제 질문만 써서 후보가 사라졌다
         out["ask_payment_note"] = ASK_PAYMENT_NOTE
+    if status == "found":
+        out = _with_place_rules(out, profiles.get_profile(client_id))
     return out
 
 

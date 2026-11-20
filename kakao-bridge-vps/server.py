@@ -60,12 +60,14 @@ class Settings:
     kakao_bot_secret: str = ""
     hermes_model: str = ""
     port: int = 8700
-    # 이어서 온 메시지를 합치는 대기 시간(초). 마지막 메시지에서 wait_more_s, 첫 메시지에서 최대 wait_max_s.
-    # 첫 대기는 사진만 온 경우와 글이 온 경우를 따로 둘 수 있다(지금은 같은 값).
+    # 이어서 온 메시지를 합치는 대기 시간(초). 마지막 메시지에서 wait_more_s, 첫 메시지에서 최대 wait_max_*.
+    # 사진만 온 경우는 길게 기다린다. 23e409b 실사용: 사진 뒤 글이 6초·9초·11초 뒤에 온 일이 세 번 있었고,
+    # 그때마다 사진 턴을 45초쯤 돌린 뒤 버렸다(질문형 답 보내지 않기). 글로 시작한 경우는 그대로 4초/10초.
     wait_first_text_s: float = 4.0
-    wait_first_photo_s: float = 4.0
+    wait_first_photo_s: float = 12.0
     wait_more_s: float = 4.0
-    wait_max_s: float = 10.0
+    wait_max_text_s: float = 10.0
+    wait_max_photo_s: float = 15.0
     # 이 파일이 있으면 사진 메시지 utterance 의 "형태"만 로그에 남긴다(기본 꺼짐). 내용·주소·ID 는 남기지 않는다.
     utterance_shape_flag: str = "~/.config/hyojason/debug-utterance-shape"
 
@@ -162,6 +164,19 @@ def extract_image_urls(body: dict[str, Any]) -> list[str]:
     return list(urls)[:3]
 
 
+def strip_image_utterance(text: str, images: list[str]) -> str:
+    """사진 메시지의 utterance 가 params 의 이미지 주소와 같거나 그 주소를 담고 있으면 그 주소 글자를 뺀다.
+    23e409b 형태 로그: 사진 메시지 utterance 는 starts_url=1, has_param_image=1 (주소 그 자체, len=196).
+    그 주소가 글로 Hermes 에 가고, 사진만 온 메시지가 "글이 있는 메시지"로 잡혀 사진 대기도 쓰이지 않았다.
+    params 의 주소와 겹치지 않는 글은 건드리지 않는다(사용자가 직접 붙인 링크일 수 있다)."""
+    hits = [u for u in images if u and u in text]
+    if not hits:
+        return text
+    for u in sorted(hits, key=len, reverse=True):
+        text = text.replace(u, " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def split_text(s: str, n: int) -> list[str]:
     out: list[str] = []
     cur = ""
@@ -200,6 +215,7 @@ _SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "�
 # 후보로 내면 안 되는 판매처. SKILL "후보에서 빼는 판매처" 규칙이 새도 버튼으로는 나가지 않게 막는다.
 # 크라우드펀딩은 펀딩이 끝났으면 살 수 없고, 진행 중이어도 바로 살 수 있는 물건이 아니다.
 BLOCKED_LINK_DOMAINS = ("wadiz.kr", "tumblbug.com")
+LINKS_ONLY_BODY = "아래 버튼을 눌러 열어 보세요."   # 답에 링크만 있고 본문이 비었을 때 카드 설명 칸에 넣는 기본 문구
 NO_LINK_MSG = "보내 드릴 수 있는 링크가 없어요. 사고 싶은 물건을 한 번 더 말씀해 주세요."
 
 
@@ -313,7 +329,7 @@ def kakao_reply_body(text: str) -> dict[str, Any]:
     if not links:  # 막힌 링크만 있었다: 원문을 보내면 URL 이 글자로 새므로, URL 을 뺀 본문만 보낸다
         return kakao_text_body(body or NO_LINK_MSG)
     chunks = split_text(body, CARD_DESC_MAX) if body else []
-    *head, last = chunks or ["아래 버튼을 눌러 열어 보세요."]
+    *head, last = chunks or [LINKS_ONLY_BODY]
     outputs: list[dict[str, Any]] = [{"simpleText": {"text": t}} for t in head[:2]]  # 말풍선 최대 3개
     outputs.append({"textCard": {"description": last[:CARD_DESC_MAX], "buttons": link_buttons(links),
                                  "buttonLayout": "vertical"}})
@@ -457,6 +473,12 @@ def is_question_reply(text: str) -> bool:
             and PAYMENT_QUESTION_MARK not in text)
 
 
+def is_links_only(text: str) -> bool:
+    """버튼으로 나갈 링크는 있는데 본문이 비어, kakao_reply_body 가 LINKS_ONLY_BODY 를 대신 넣는 답."""
+    body, links = split_links(text)
+    return not body and any(not is_blocked_link(u) for u, _ in links)
+
+
 def neutralize_user_text(text: str) -> str:
     """사용자 글 속 "[브릿지 안내" 표식의 대괄호를 없애 진짜 브릿지 안내와 구분되게 한다."""
     return _FAKE_NOTE.sub("브릿지 안내", text)
@@ -557,11 +579,15 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         if q.timer and not q.timer.done():
             q.timer.cancel()
         first, last = q.pending[0], q.pending[-1]
-        if len(q.pending) == 1:
-            wait = s.wait_first_photo_s if (first.images and not first.text) else s.wait_first_text_s
+        photo_start = bool(first.images) and not first.text
+        if all(m.images and not m.text for m in q.pending):   # 아직 사진만 왔다: 글이 올 때까지 길게
+            wait = s.wait_first_photo_s
+        elif len(q.pending) == 1:
+            wait = s.wait_first_text_s
         else:
             wait = s.wait_more_s
-        delay = max(0.0, min(first.arrived + s.wait_max_s, last.arrived + wait) - time.monotonic())
+        wait_max = s.wait_max_photo_s if photo_start else s.wait_max_text_s
+        delay = max(0.0, min(first.arrived + wait_max, last.arrived + wait) - time.monotonic())
 
         async def fire() -> None:
             await asyncio.sleep(delay)
@@ -606,6 +632,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
             else:
                 if ok and PAYMENT_QUESTION_MARK in reply and not _ANY_URL.search(reply):
                     outcome += ",payment_q_no_links"   # 결제 질문만 있는 답(후보 없음). 답은 그대로 보내고 로그로 남긴다
+                if ok and is_links_only(reply):
+                    outcome += ",links_only"           # 본문 없이 링크만 온 답. 기본 문구가 대신 나간다(로그로 남긴다)
                 await send_callback(last, kakao_reply_body(reply), outcome)
         finally:
             q.busy = False
@@ -648,8 +676,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
 
         ur = body.get("userRequest") if isinstance(body.get("userRequest"), dict) else {}
         raw_text = str(ur.get("utterance") or "").strip()
-        text = neutralize_user_text(raw_text)
         images = extract_image_urls(body)
+        text = neutralize_user_text(strip_image_utterance(raw_text, images))
         user = ur.get("user") if isinstance(ur.get("user"), dict) else {}
         user_id = str(user.get("id") or "unknown")
         callback_url = ur.get("callbackUrl")

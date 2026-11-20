@@ -8,8 +8,8 @@
 - 채널 사용자 ID 는 channels.<채널>_user_id 에 둔다 (telegram 은 telegram_chat_id).
 - 읽을 때는 옛 형식도 standardize() 로 표준 형식으로 바꿔 읽는다. 파일을 고치려면 migrate_profiles 를 쓴다.
 - items: 찾아 드린(found)·고르신(chosen) 물건. record_item 도구만 쓰고, 칸·개수(최근 50건)를 코드로 강제한다.
-  실제 결제 여부는 알 수 없으므로 기록하지 않는다.
-- payment: 주로 사는 곳(place)과 결제하는 사람(by: "" 모름 | self | family), 결제 방식을 물어본 날(asked_on).
+  실제 결제 여부는 알 수 없으므로 기록하지 않는다. url(상품 페이지 주소)은 선택 칸이고, 옛 기록에는 없다("").
+- payment: 주로 사는 곳(places, 여러 곳. 옛 형식 place 한 줄도 읽는다)과 결제하는 사람(by: "" 모름 | self | family), 결제 방식을 물어본 날(asked_on).
   결제 질문은 평생 한 번만: record_item(found) 이 정하고 asked_on 을 채운다(스킬 글에 맡기지 않음).
   다른 사람에게 연락하는 칸은 없다.
 - history: 예전 log_recommendation 의 자유 형식 기록. 읽기만 하고 더 쓰지 않는다.
@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -38,7 +39,12 @@ MAX_ITEMS = 50                           # 넘으면 오래된 found 부터 지�
 RECENT_FOUND_IN_VIEW = 10                # resolve_client 에는 chosen 전부 + 최근 found 10건만
 MAX_TEXT = 80
 MAX_OPTIONS = 6
-MAX_PLACE = 20
+MAX_PLACE = 20                           # 가게 하나의 이름 길이
+MAX_PLACES = 5
+MAX_URL = 500
+# 후보로 내면 안 되는 판매처(크라우드펀딩). 카카오 브릿지 BLOCKED_LINK_DOMAINS 와 같은 목록이다.
+BLOCKED_ITEM_DOMAINS = ("wadiz.kr", "tumblbug.com")
+_COUPANG = re.compile(r"(쿠팡|coupang)", re.I)
 
 
 # ---------- 표준 스키마 ----------
@@ -55,7 +61,7 @@ def empty_profile() -> dict[str, Any]:
         "shopping_rules": {"default_deadline_days": None, "allow_overseas_when_no_deadline": True,
                            "max_candidates": 3},
         "delivery": {"region": ""},
-        "payment": {"place": "", "by": "", "asked_on": ""},
+        "payment": {"places": [], "by": "", "asked_on": ""},
         "notes": [],
         "items": [],
         "history": [],
@@ -83,7 +89,7 @@ def _as_list(v: Any) -> list[str]:
     if isinstance(v, (list, tuple, set)):
         return [str(x) for x in v if x not in (None, "")]
     if isinstance(v, str):
-        return [x.strip() for x in re.split(r"[,/]", v) if x.strip()]
+        return [x.strip() for x in re.split(r"[,/·]", v) if x.strip()]
     return [str(v)]
 
 
@@ -211,9 +217,10 @@ def standardize(raw: dict[str, Any], stem: str = "") -> tuple[dict[str, Any], li
 
     pay = raw.pop("payment", None)
     if isinstance(pay, dict):
-        place = _str(pay.pop("place", "")).strip()
+        # 옛 형식 place: "쿠팡" 또는 "쿠팡, 네이버" 한 줄 → places 목록. 새 형식 places 와 합친다.
+        places = _merge_list(_as_list(pay.pop("places", None)), _as_list(pay.pop("place", None)))
+        p["payment"]["places"] = [x[:MAX_PLACE] for x in places][:MAX_PLACES]
         by = _str(pay.pop("by", "")).strip()
-        p["payment"]["place"] = place[:MAX_PLACE]
         asked_on = _str(pay.pop("asked_on", "")).strip()
         if asked_on:
             try:
@@ -264,7 +271,7 @@ def _clean_item(it: Any) -> dict[str, Any]:
     """items 한 건을 정해진 칸으로만 만든다. 칸이 틀리면 ValueError."""
     if not isinstance(it, dict):
         raise ValueError("항목 형식이 아니에요")
-    extra = set(it) - {"date", "status", "brand", "name", "options", "seller", "seen_price_krw"}
+    extra = set(it) - {"date", "status", "brand", "name", "options", "seller", "seen_price_krw", "url"}
     if extra:
         raise ValueError(f"정해지지 않은 칸: {', '.join(sorted(extra))}")
     status = _text(it.get("status"), "status", required=True)
@@ -286,7 +293,33 @@ def _clean_item(it: Any) -> dict[str, Any]:
     datetime.strptime(date, "%Y-%m-%d")      # 형식 검사
     return {"date": date, "status": status, "brand": _text(it.get("brand"), "brand"),
             "name": _text(it.get("name"), "name", required=True), "options": clean_opts,
-            "seller": _text(it.get("seller"), "seller"), "seen_price_krw": price}
+            "seller": _text(it.get("seller"), "seller"), "seen_price_krw": price,
+            "url": _clean_url(it.get("url"))}
+
+
+def _is_blocked_url(url: str) -> bool:
+    try:
+        host = (urlsplit(url).hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in BLOCKED_ITEM_DOMAINS)
+
+
+def _clean_url(v: Any) -> str:
+    """상품 페이지 주소(선택). 확인받은 물건을 다시 드릴 때 검색 없이 쓰려고 남긴다.
+    크라우드펀딩 주소는 후보가 아니므로 기록하지 않는다(항목째 거절해서 펀딩 상품이 기록으로 남지 않게).
+
+    주의: 나중에 쿠팡 파트너스 API(coupang_partners.py)를 쓰게 되면, 그 API 에서 받은 데이터(상품 주소·가격 등)는
+    약관상 저장하면 안 된다(사용자 확인 사항, 2026-11-20). 지금은 그 API 가 꺼져 있어 해당 없다.
+    켜기 전에 search_products 의 affiliate=true 결과가 여기(url·seen_price_krw)에 들어오지 않게 막아야 한다."""
+    url = _text(v, "url", limit=MAX_URL)
+    if not url:
+        return ""
+    if not re.match(r"^https?://\S+$", url, re.I):
+        raise ValueError("url 은 http(s) 로 시작하는 상품 페이지 주소여야 해요")
+    if _is_blocked_url(url):
+        raise ValueError("크라우드펀딩(와디즈·텀블벅) 상품은 후보가 아니라 기록하지 않아요")
+    return url
 
 
 def _same_item(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -303,7 +336,7 @@ def _trim_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def record_item(client_id: str, *, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
-                seller: str = "", seen_price_krw: int | None = None,
+                seller: str = "", seen_price_krw: int | None = None, url: str = "",
                 today: str | None = None) -> tuple[dict[str, Any], bool]:
     """찾아 드린(found)·고르신(chosen) 물건을 정해진 칸으로 남긴다. 반환: (남긴 항목, ask_payment).
     chosen 은 같은 날 같은 브랜드·이름·옵션의 found 가 있으면 그 항목을 chosen 으로 바꾼다(두 줄로 남지 않게).
@@ -315,7 +348,7 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
         raise ValueError("프로필이 없어요. 먼저 resolve_client / save_client_profile 로 확인하세요")
     day = today or datetime.now(KST).date().isoformat()
     item = _clean_item({"date": day, "status": status, "brand": brand, "name": name, "options": options,
-                        "seller": seller, "seen_price_krw": seen_price_krw})   # 칸이 틀리면 여기서 멈춘다(asked_on 안 채움)
+                        "seller": seller, "seen_price_krw": seen_price_krw, "url": url})   # 칸이 틀리면 여기서 멈춘다(asked_on 안 채움)
 
     ask_payment = item["status"] == "found" and not cur["payment"]["by"] and not cur["payment"]["asked_on"]
     if ask_payment:
@@ -324,11 +357,13 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
     items = cur["items"]
     match = next((i for i, x in enumerate(items) if _same_item(x, item)), None)
     if match is not None and items[match]["status"] == "chosen" and item["status"] == "found":
+        if item["url"] and not items[match]["url"]:
+            items[match]["url"] = item["url"]   # 주소가 없던 고르신 기록에는 주소만 채운다
         item = items[match]              # 이미 고르신 물건을 다시 찾아 드림: 고르신 기록을 그대로 둔다
     else:
         if match is not None:            # 같은 물건은 한 줄로: found→chosen 전환, 같은 상태면 최신으로 올림
             old = items.pop(match)
-            item = {**item, "seller": item["seller"] or old["seller"],
+            item = {**item, "seller": item["seller"] or old["seller"], "url": item["url"] or old["url"],
                     "seen_price_krw": item["seen_price_krw"] if item["seen_price_krw"] is not None
                     else old["seen_price_krw"]}
         cur["items"] = _trim_items([item, *items])
@@ -336,11 +371,27 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
     return item, ask_payment
 
 
+def confirm_phrase(item: dict[str, Any]) -> str:
+    """지난 기록을 확인할 때 쓸 문장. found/chosen 구분을 글 규칙에 맡기지 않고 코드가 정한다.
+    23e409b 실사용: found 만 있는 기록에 "지난번 … 맞으세요?"(고르신 물건 문장)로 물었다."""
+    what = " ".join(x for x in (item.get("brand", ""), item.get("name", ""), *(item.get("options") or {}).values()) if x)
+    if item.get("status") == "chosen":
+        return f"지난번 {what} 맞으세요?"
+    return f"지난번에 찾아 드렸던 {what} 말씀이세요?"
+
+
+def has_coupang(profile: dict[str, Any] | None) -> bool:
+    return bool(profile) and any(_COUPANG.search(x) for x in profile["payment"]["places"])
+
+
 def agent_view(profile: dict[str, Any] | None) -> tuple[dict[str, Any] | None, int]:
-    """도구가 돌려줄 프로필. items 는 chosen 전부 + 최근 found 10건(최신이 앞). 반환: (프로필, 뺀 found 건수)."""
+    """도구가 돌려줄 프로필. items 는 chosen 전부 + 최근 found 10건(최신이 앞). 반환: (프로필, 뺀 found 건수).
+    각 item 에 confirm_phrase(확인 문장)를 붙인다. 저장하지 않는 보기용 칸이다."""
     if profile is None:
         return None, 0
     view = copy.deepcopy(profile)
+    for it in view["items"]:
+        it["confirm_phrase"] = confirm_phrase(it)
     found_kept, kept, omitted = 0, [], 0
     for it in view["items"]:
         if it["status"] == "chosen":
@@ -400,8 +451,10 @@ def upsert_profile(channel: str, channel_user_id: str, *, display_name: str = ""
                    delivery_region: str = "", likes: list[str] | None = None, dislikes: list[str] | None = None,
                    brands_avoid: list[str] | None = None, price_sensitivity: str = "",
                    notes: list[str] | None = None, payment_place: str = "",
-                   payment_by: str = "") -> tuple[dict[str, Any], bool]:
-    """정해진 필드만 저장한다. 빈 값은 기존 값을 지우지 않고, 목록은 합친다. 반환: (프로필, 새로 만들었는지)"""
+                   payment_by: str = "", payment_places: list[str] | None = None) -> tuple[dict[str, Any], bool]:
+    """정해진 필드만 저장한다. 빈 값은 기존 값을 지우지 않고, 목록은 합친다. 반환: (프로필, 새로 만들었는지)
+    payment_places(주로 사는 곳 여러 곳)는 합치지 않고 바꾼다: 사용자가 한 번에 말한 곳들이 지금의 답이다.
+    payment_place(옛 한 줄 형식, "쿠팡, 네이버")도 받아 나눠 넣는다."""
     if channel not in CHANNELS:
         raise ValueError(f"channel 은 {CHANNELS} 중 하나여야 해요")
     if not str(channel_user_id).strip():
@@ -409,7 +462,10 @@ def upsert_profile(channel: str, channel_user_id: str, *, display_name: str = ""
     payment_by = str(payment_by or "").strip()
     if payment_by and payment_by not in PAYMENT_BY:
         raise ValueError(f"payment_by 는 {PAYMENT_BY} 중 하나여야 해요 (self: 본인, family: 다른 가족)")
-    payment_place = _text(payment_place, "payment_place", limit=MAX_PLACE)
+    places = _merge_list(_as_list(payment_places), _as_list(payment_place))
+    if len(places) > MAX_PLACES:
+        raise ValueError(f"payment_places 는 {MAX_PLACES}곳까지예요")
+    places = [_text(x, "payment_places 의 가게 이름", limit=MAX_PLACE) for x in places]
     existing = resolve_client_id(channel, channel_user_id)
     p = get_profile(existing) if existing else None
     created = p is None
@@ -423,12 +479,14 @@ def upsert_profile(channel: str, channel_user_id: str, *, display_name: str = ""
                         (("body", "height_cm"), height_cm), (("body", "notes"), body_notes),
                         (("delivery", "region"), delivery_region),
                         (("preferences", "price_sensitivity"), price_sensitivity),
-                        (("payment", "place"), payment_place), (("payment", "by"), payment_by)):
+                        (("payment", "by"), payment_by)):
         if str(value or "").strip():
             target = p
             for k in path[:-1]:
                 target = target[k]
             target[path[-1]] = str(value).strip()
+    if places:
+        p["payment"]["places"] = places
     for key, values in (("likes", likes), ("dislikes", dislikes), ("brands_avoid", brands_avoid)):
         p["preferences"][key] = _merge_list(p["preferences"][key], _as_list(values))
     p["notes"] = _merge_list(p["notes"], _as_list(notes))

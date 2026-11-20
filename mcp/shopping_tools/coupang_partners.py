@@ -8,6 +8,8 @@
 ⚠️ 확인 필요: 아래 엔드포인트·서명 형식·응답 필드·호출 제한·대가성 문구는 공식 문서로 확인하지 못했다
    (partners.coupang.com, developers.coupang.com 이 자동 접근에 403). 작성자의 사전 지식 기준이다.
    키를 받은 뒤 파트너스 콘솔의 Open API 문서와 이 파일 맨 위 상수들을 대조할 것.
+- 저장 금지: 이 API 에서 받은 데이터는 약관상 저장하면 안 된다(사용자 확인 사항, 2026-11-20).
+  켜기 전에 profiles._clean_url 주석대로 record_item 의 url·seen_price_krw 에 들어가지 않게 막을 것.
 """
 from __future__ import annotations
 

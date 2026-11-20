@@ -163,7 +163,7 @@ def test_old_profile_without_new_fields_still_reads(tmp_clients) -> None:
     _write(tmp_clients, f"{old['client_id']}.yaml", old)
     p = server.resolve_client("kakao", KAKAO_ID)["profile"]
     assert p["display_name"] == "어머니"
-    assert p["payment"] == {"place": "", "by": "", "asked_on": ""}   # self 는 옮기지 않아 "모름", 물어본 적도 없음
+    assert p["payment"] == {"places": [], "by": "", "asked_on": ""}   # self 는 옮기지 않아 "모름", 물어본 적도 없음
     assert p["items"] == [] and p["notes"] == []            # 빈 연락처는 버린다
     assert p["history"] == old["history"]                   # history 는 읽기만
     assert set(p) == STANDARD_KEYS
@@ -179,9 +179,9 @@ def test_old_delegate_moves_to_family_and_contact_is_kept_in_notes() -> None:
 
 def test_payment_fields_save_validate_and_do_not_erase() -> None:
     r = server.save_client_profile("kakao", KAKAO_ID, payment_place="쿠팡", payment_by="family")
-    assert r["profile"]["payment"] == {"place": "쿠팡", "by": "family", "asked_on": ""}
+    assert r["profile"]["payment"] == {"places": ["쿠팡"], "by": "family", "asked_on": ""}
     server.save_client_profile("kakao", KAKAO_ID, display_name="어머니")          # 빈 값은 지우지 않는다
-    assert server.resolve_client("kakao", KAKAO_ID)["profile"]["payment"] == {"place": "쿠팡", "by": "family",
+    assert server.resolve_client("kakao", KAKAO_ID)["profile"]["payment"] == {"places": ["쿠팡"], "by": "family",
                                                                                "asked_on": ""}
     assert server.save_client_profile("kakao", KAKAO_ID, payment_by="delegate")["saved"] is False
     assert server.save_client_profile("kakao", KAKAO_ID, payment_place="가" * 21)["saved"] is False
@@ -199,7 +199,8 @@ def test_record_item_schema_is_enforced() -> None:
                             seller="11번가", seen_price_krw=18900)
     assert ok["recorded"] is True
     item = ok["item"]
-    assert set(item) == {"date", "status", "brand", "name", "options", "seller", "seen_price_krw"}
+    assert set(item) == {"date", "status", "brand", "name", "options", "seller", "seen_price_krw", "url"}
+    assert item["url"] == ""                                              # 선택 칸: 안 주면 빈 값
     assert len(item["date"]) == 10 and item["seen_price_krw"] == 18900
     bad = [dict(status="bought"), dict(name=" "), dict(seen_price_krw=0), dict(seen_price_krw=-1),
            dict(seen_price_krw="18900"), dict(seen_price_krw=True), dict(options=["240ml"]),
@@ -302,7 +303,7 @@ def test_user_can_tell_payment_later_regardless_of_asked_on() -> None:
     assert _found(cid, "후보")[1] is True                              # 물었지만 답이 없었다
     r = server.save_client_profile("kakao", KAKAO_ID, payment_place="네이버", payment_by="family")
     assert r["saved"] is True
-    assert r["profile"]["payment"] == {"place": "네이버", "by": "family", "asked_on": "2026-11-20"}
+    assert r["profile"]["payment"] == {"places": ["네이버"], "by": "family", "asked_on": "2026-11-20"}
 
 
 def test_asked_on_survives_reread_migration_and_bad_value_is_kept_in_notes(tmp_clients) -> None:
@@ -323,3 +324,96 @@ def test_record_item_tells_where_to_put_the_payment_question() -> None:
     assert "맨 끝" in first["ask_payment_note"] and "결제 질문만 있는 답은 쓰지 않는다" in first["ask_payment_note"]
     second = server.record_item(cid, "found", "ELO 플라워 텀블러", options={"용량": "350ml", "색": "네이비"})
     assert second["ask_payment"] is False and "ask_payment_note" not in second
+
+
+
+# ---------- 상품 페이지 주소(items[].url) ----------
+PAGE = "https://smartstore.naver.com/elo/products/123?NaPm=ct%3Dabc"
+
+
+def test_item_url_is_optional_and_kept_exactly() -> None:
+    cid = _cid()
+    r = server.record_item(cid, "found", "플라워 텀블러", brand="ELO", options={"용량": "240ml"}, url=PAGE)
+    assert r["recorded"] is True and r["item"]["url"] == PAGE              # 글자 그대로
+    assert server.resolve_client("kakao", KAKAO_ID)["profile"]["items"][0]["url"] == PAGE
+    for bad in ("smartstore.naver.com/x", "javascript:alert(1)", "https://x.com/" + "a" * 500, "https://a b"):
+        assert server.record_item(cid, "found", "텀블러", url=bad)["recorded"] is False, bad
+
+
+def test_crowdfunding_url_is_not_recorded() -> None:
+    cid = _cid()
+    for url in ("https://www.wadiz.kr/web/campaign/detail/1", "https://tumblbug.com/x",
+                "https://WWW.WADIZ.KR./x", "https://user@wadiz.kr/x"):
+        r = server.record_item(cid, "found", "펀딩 텀블러", url=url)
+        assert r["recorded"] is False and "크라우드펀딩" in r["error"], url
+    assert profiles.get_profile(cid)["items"] == []
+    assert profiles.get_profile(cid)["payment"]["asked_on"] == ""          # 거절된 기록으로 결제 질문 기회를 쓰지 않는다
+
+
+def test_old_items_without_url_still_read_and_url_is_filled_later(tmp_clients) -> None:
+    cid = profiles.client_id_for("kakao", KAKAO_ID)
+    old_item = {"date": "2026-11-18", "status": "chosen", "brand": "ELO", "name": "플라워 텀블러",
+                "options": {"색": "네이비"}, "seller": "11번가", "seen_price_krw": 15900}   # url 칸 없는 옛 기록
+    _write(tmp_clients, f"{cid}.yaml", {"client_id": cid, "channels": {"kakao_user_id": KAKAO_ID}, "items": [old_item]})
+    it = server.resolve_client("kakao", KAKAO_ID)["profile"]["items"][0]
+    assert it["url"] == "" and it["seen_price_krw"] == 15900 and it["status"] == "chosen"
+    profiles.record_item(cid, status="found", name="플라워 텀블러", brand="ELO", options={"색": "네이비"},
+                         url=PAGE, today="2026-11-18")
+    items = profiles.get_profile(cid)["items"]
+    assert len(items) == 1 and items[0]["status"] == "chosen" and items[0]["url"] == PAGE   # 고르신 기록에 주소만 채움
+    profiles.record_item(cid, status="chosen", name="플라워 텀블러", brand="ELO", options={"색": "네이비"},
+                         today="2026-11-18")
+    assert profiles.get_profile(cid)["items"][0]["url"] == PAGE            # 빈 값은 옛 주소를 지키는다
+
+
+# ---------- 확인 문장(confirm_phrase): found/chosen 구분을 코드가 정한다 ----------
+
+def test_confirm_phrase_differs_for_found_and_chosen() -> None:
+    cid = _cid()
+    profiles.record_item(cid, status="found", name="플라워 텀블러", brand="ELO",
+                         options={"색": "네이비", "용량": "240ml"}, today="2026-11-19")
+    profiles.record_item(cid, status="chosen", name="보온병", brand="예시", today="2026-11-18")
+    by_name = {i["name"]: i["confirm_phrase"] for i in server.resolve_client("kakao", KAKAO_ID)["profile"]["items"]}
+    assert by_name["플라워 텀블러"] == "지난번에 찾아 드렸던 ELO 플라워 텀블러 네이비 240ml 말씀이세요?"
+    assert by_name["보온병"] == "지난번 예시 보온병 맞으세요?"
+    assert all("confirm_phrase" not in i for i in profiles.get_profile(cid)["items"])  # 보기용 칸. 파일에는 남기지 않는다
+
+
+# ---------- 주로 사는 곳 여러 곳(payment.places) ----------
+
+def test_multiple_places_are_saved_and_replace_previous() -> None:
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["쿠팡", "네이버"], payment_by="self")
+    assert r["saved"] is True and r["profile"]["payment"]["places"] == ["쿠팡", "네이버"]
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_place="쿠팡, 네이버 · 11번가")   # 옛 한 줄 형식도 나눈다
+    assert r["profile"]["payment"]["places"] == ["쿠팡", "네이버", "11번가"]
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["네이버"])           # 새로 말하면 바꾼다
+    assert r["profile"]["payment"]["places"] == ["네이버"]
+    server.save_client_profile("kakao", KAKAO_ID, display_name="어머니")                  # 빈 값은 지우지 않는다
+    assert profiles.get_profile(r["client_id"])["payment"]["places"] == ["네이버"]
+    assert server.save_client_profile("kakao", KAKAO_ID, payment_places=[str(i) for i in range(6)])["saved"] is False
+    assert server.save_client_profile("kakao", KAKAO_ID, payment_places=["가" * 21])["saved"] is False
+
+
+def test_old_single_place_reads_as_list() -> None:
+    std, leftovers = profiles.standardize({"payment": {"place": "쿠팡, 네이버", "by": "self"}})
+    assert std["payment"] == {"places": ["쿠팡", "네이버"], "by": "self", "asked_on": ""} and leftovers == []
+    std, _ = profiles.standardize({"payment": {"place": "쿠팡/네이버"}})
+    assert std["payment"]["places"] == ["쿠팡", "네이버"]
+
+
+def test_coupang_in_places_puts_coupang_first_rule_in_tool_replies() -> None:
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["쿠팡", "네이버"], payment_by="self")
+    assert r["place_rules"] == [server.COUPANG_FIRST_NOTE]
+    assert "쿠팡은 제가 직접 볼 수 없어서 검색어를 드려요" in server.COUPANG_FIRST_NOTE
+    assert "맨 앞" in server.COUPANG_FIRST_NOTE
+    assert server.resolve_client("kakao", KAKAO_ID)["place_rules"] == [server.COUPANG_FIRST_NOTE]
+    found = server.record_item(r["client_id"], "found", "플라워 텀블러")
+    assert found["place_rules"] == [server.COUPANG_FIRST_NOTE]            # 후보를 기록하는 그 순간에도 알려 준다
+    assert "place_rules" not in server.record_item(r["client_id"], "chosen", "플라워 텀블러")
+
+
+def test_no_coupang_no_place_rules() -> None:
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["네이버"])
+    assert "place_rules" not in r and "place_rules" not in server.resolve_client("kakao", KAKAO_ID)
+    assert "place_rules" not in server.record_item(r["client_id"], "found", "텀블러")
+    assert profiles.has_coupang({"payment": {"places": ["Coupang"]}}) is True
