@@ -567,6 +567,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
                 q.suppressed_prev, q.carry = True, turn
                 await send_callback(last, kakao_text_body(CLOSE_MSG), "suppressed_question")
             else:
+                if ok and PAYMENT_QUESTION_MARK in reply and not _ANY_URL.search(reply):
+                    outcome += ",payment_q_no_links"   # 결제 질문만 있는 답(후보 없음). 답은 그대로 보내고 로그로 남긴다
                 await send_callback(last, kakao_reply_body(reply), outcome)
         finally:
             q.busy = False

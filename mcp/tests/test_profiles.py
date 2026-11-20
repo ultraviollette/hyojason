@@ -312,3 +312,14 @@ def test_asked_on_survives_reread_migration_and_bad_value_is_kept_in_notes(tmp_c
     assert profiles.get_profile(cid)["payment"]["asked_on"] == "2026-11-20"
     std, _ = profiles.standardize({"payment": {"by": "", "asked_on": "어제"}})
     assert std["payment"]["asked_on"] == "" and "payment.asked_on: 어제" in std["notes"]
+
+
+def test_record_item_tells_where_to_put_the_payment_question() -> None:
+    """11/20 실사용: 후보를 기록하고도 답에 결제 질문만 썼다. ask_payment=true 응답에 자리를 알려 준다."""
+    cid = _cid()
+    first = server.record_item(cid, "found", "ELO 플라워 텀블러", options={"용량": "240ml", "색": "네이비"})
+    assert first["ask_payment"] is True
+    assert first["ask_payment_note"] == server.ASK_PAYMENT_NOTE
+    assert "맨 끝" in first["ask_payment_note"] and "결제 질문만 있는 답은 쓰지 않는다" in first["ask_payment_note"]
+    second = server.record_item(cid, "found", "ELO 플라워 텀블러", options={"용량": "350ml", "색": "네이비"})
+    assert second["ask_payment"] is False and "ask_payment_note" not in second

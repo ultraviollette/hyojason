@@ -662,3 +662,17 @@ def test_compose_turn_single_message_is_unchanged() -> None:
     m = Incoming(1, "살색 내의", [], "cb", "conv", 0.0)
     assert compose_turn([m]) == "살색 내의"
     assert compose_turn([Incoming(1, "", [PHOTO_URL], "cb", "conv", 0.0)]) == "(사진만 보냄)"
+
+
+def test_payment_question_without_links_is_sent_but_flagged_in_log(caplog) -> None:
+    import logging
+    pay_only = "주로 어디서 사세요(쿠팡, 네이버 등)? 결제는 직접 하세요, 가족분이 해 주세요?"
+    h = _Hermes([pay_only])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=_text("mom", "ELO 플라워 텀블러 240ml 네이비 찾아줘", 1))
+
+    with caplog.at_level(logging.INFO, logger="hyojason.bridge"):
+        _run(h, steps)
+    assert h.said("/cb/mom/1") == pay_only                                # 답은 바꾸지 않는다
+    assert any("payment_q_no_links" in r.getMessage() for r in caplog.records)

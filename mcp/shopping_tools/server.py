@@ -91,13 +91,17 @@ def record_item(client_id: str, status: str, name: str, brand: str = "", options
     seller: 판매처 이름. seen_price_krw: 그때 본 가격(원). 검색 결과나 페이지에 적혀 있던 경우만, 모르면 비운다.
     결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
     같은 날 같은 브랜드·이름·옵션의 found 를 chosen 으로 남기면 그 항목이 chosen 으로 바뀐다. 최근 50건까지 보관.
-    ask_payment 가 true 일 때만 이번 답 끝에 결제 방식 질문을 붙인다. 도구가 평생 한 번만 true 를 준다."""
+    ask_payment 가 true 일 때만 이번 답 끝에 결제 방식 질문을 붙인다. 도구가 평생 한 번만 true 를 준다.
+    결제 질문은 후보와 링크를 모두 쓴 답의 맨 끝에만 붙인다. 결제 질문만 있는 답은 쓰지 않는다(ask_payment_note)."""
     try:
         item, ask_payment = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
                                                  seller=seller, seen_price_krw=seen_price_krw)
     except ValueError as e:
         return {"recorded": False, "error": str(e), "ask_payment": False}
-    return {"recorded": True, "item": item, "ask_payment": ask_payment}
+    out = {"recorded": True, "item": item, "ask_payment": ask_payment}
+    if ask_payment:  # 11/20 실사용: 후보를 기록하고도 답에 결제 질문만 써서 후보가 사라졌다
+        out["ask_payment_note"] = ASK_PAYMENT_NOTE
+    return out
 
 
 # ---------- 검색 ----------
@@ -153,6 +157,8 @@ NO_RESULT_NEXT_STEP = (
 
 
 _SPACES = re.compile(r"\s+")
+ASK_PAYMENT_NOTE = ("후보와 링크를 먼저 모두 쓰고, 그 답의 맨 끝에 결제 방식 질문 한 줄을 붙인다. "
+                    "결제 질문만 있는 답은 쓰지 않는다. 이번 답에서 기록한 후보는 모두 보여 준다.")
 # 쿠팡 검색 링크는 카카오 인앱 브라우저에서 www·m 주소 모두 "사용권한이 없습니다"로 막혀 링크 대신 검색어만 준다.
 NAVER_SHOP_SEARCH = "https://m.search.naver.com/search.naver?where=m_shop&query="
 
