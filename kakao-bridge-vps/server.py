@@ -6,8 +6,9 @@ Worker 의 waitUntil 30초 제한 때문에 Hermes 응답이 길면 콜백이 �
 
 흐름
  1. 카카오가 POST /kakao/skill 로 사용자 발화(+사진)를 보낸다. 스킬 서버는 5초 안에 응답해야 한다.
- 2. 즉시 { useCallback: true } 로 답하고, 백그라운드 asyncio 태스크에서 Hermes 에게 묻는다.
- 3. Hermes 답을 userRequest.callbackUrl 로 POST 한다 (유효 5분, 1회).
+ 2. 즉시 { useCallback: true } 로 답한다. 이어서 온 메시지는 잠깐 기다렸다 합치고(처리 중에 온 것은 다음 한 번으로),
+    백그라운드 asyncio 태스크에서 Hermes 에게 한 번 묻는다 ("메시지 합치기" 참고).
+ 3. Hermes 답을 마지막 메시지의 userRequest.callbackUrl 로 POST 한다 (유효 5분, 1회). 합쳐진 앞 메시지의 콜백은 짧은 안내로 닫는다.
 
 로그는 요청당 한 줄(시각, 경로, 결과, 소요 시간). 시크릿·API 키·사용자 발화·사용자 ID·callbackUrl 은 남기지 않는다.
 uvicorn access log 는 쿼리스트링(?secret=...)을 찍으므로 끈다.
@@ -25,7 +26,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -57,6 +58,12 @@ class Settings:
     kakao_bot_secret: str = ""
     hermes_model: str = ""
     port: int = 8700
+    # 이어서 온 메시지를 합치는 대기 시간(초). 마지막 메시지에서 wait_more_s, 첫 메시지에서 최대 wait_max_s.
+    # 첫 대기는 사진만 온 경우와 글이 온 경우를 따로 둘 수 있다(지금은 같은 값).
+    wait_first_text_s: float = 4.0
+    wait_first_photo_s: float = 4.0
+    wait_more_s: float = 4.0
+    wait_max_s: float = 10.0
 
     @classmethod
     def from_env(cls, env: dict[str, str] | os._Environ = os.environ) -> "Settings":
@@ -387,6 +394,72 @@ class Conversations:
         return conv
 
 
+# ---------- 메시지 합치기 ----------
+# 실사용 로그: 사진 뒤의 글은 11~31초 뒤에 와서, 늘 사진 턴(약 53초)을 처리하는 도중에 도착했다.
+# 메시지마다 따로 답하니 봇의 답이 한 박자 전 메시지에 대한 답이 되어 "한 칸씩 밀려" 보였다.
+#  (가) 첫 메시지 뒤 잠깐 기다렸다가 그 사이 온 메시지를 한 요청으로 합친다.
+#  (나) 처리 중에 온 메시지는 끊지 않고 모아서 다음 한 번으로 보낸다.
+#  (다) 처리 중 새 메시지가 있고, 돌아온 답이 질문형이면(주소 없음 + 물음표 + 결제 질문 아님) 보내지 않고
+#       다음 턴에 "전달되지 않았다"는 브릿지 안내를 붙여 합쳐 보낸다. 이때 답을 보내지 않은 턴의 메시지
+#       (사진 포함)도 다음 턴에 다시 넣는다. Hermes 가 앞 턴의 사진을 다시 보는지 확인되지 않아서다.
+# 카카오 콜백은 메시지마다 1회라, 합쳐진 앞 메시지의 콜백은 짧은 안내로 닫는다.
+
+CLOSE_MSG = "이어서 보내 주신 것까지 같이 볼게요."
+RESET_DROP_MSG = "앞에 보내 주신 건 접어 두고 처음부터 할게요."
+BRIDGE_NOTE = ("[브릿지 안내: 직전 당신의 답은 사용자에게 전달되지 않았다. 사용자는 그 답을 보지 못한 채 "
+               "아래 메시지를 보냈다. 아래 메시지까지 반영해 다시 판단하라.]")
+PAYMENT_QUESTION_MARK = "주로 어디서 사세요"        # SKILL 의 결제 질문 문구. 이 답은 보내지 않기 대상에서 뺀다
+_ANY_URL = re.compile(r"https?://", re.I)
+_FAKE_NOTE = re.compile(r"\[\s*브릿지\s*안내")
+
+
+def is_question_reply(text: str) -> bool:
+    """보내지 않아도 되는 질문형 답: 원문에 주소가 없고, 물음표가 있고, 결제 질문이 아니다.
+    원문 기준이라 차단 도메인 링크만 있던 답도 '후보가 있던 답'으로 본다(결제 질문 기회 asked_on 보호)."""
+    return (not _ANY_URL.search(text) and ("?" in text or "？" in text)
+            and PAYMENT_QUESTION_MARK not in text)
+
+
+def neutralize_user_text(text: str) -> str:
+    """사용자 글 속 "[브릿지 안내" 표식의 대괄호를 없애 진짜 브릿지 안내와 구분되게 한다."""
+    return _FAKE_NOTE.sub("브릿지 안내", text)
+
+
+@dataclass
+class Incoming:
+    seq: int
+    text: str
+    images: list[str]
+    callback_url: str
+    conversation: str
+    arrived: float                 # time.monotonic()
+    done: bool = False             # 콜백을 이미 불렀는지 (메시지마다 정확히 한 번)
+
+
+def compose_turn(batch: list[Incoming], note: str = "") -> str:
+    """Hermes 에 보낼 글. 메시지가 하나면 원문 그대로, 여럿이면 순서대로 번호를 붙여 합친다.
+    사진은 같은 턴의 input_image 로 함께 보낸다(여기서는 "(사진)" 표시만)."""
+    if len(batch) == 1:
+        m = batch[0]
+        body = m.text or ("(사진만 보냄)" if m.images else "")
+    else:
+        lines = [f"(이어서 보낸 메시지 {len(batch)}개)"]
+        for i, m in enumerate(batch, 1):
+            lines.append(f"{i}) " + " ".join(x for x in ("(사진)" if m.images else "", m.text) if x))
+        body = "\n".join(lines)
+    return f"{note}\n{body}" if note else body
+
+
+@dataclass
+class UserQueue:
+    pending: list[Incoming]
+    timer: asyncio.Task | None = None
+    busy: bool = False
+    suppressed_prev: bool = False  # 직전 턴의 답을 보내지 않았다 → 다음 턴에 BRIDGE_NOTE
+    carry: list[Incoming] = field(default_factory=list)  # 답을 보내지 않은 턴의 메시지(사진 포함). 다음 턴에 다시 넣는다
+    epoch: int = 0                 # "처음부터"가 오면 올린다. 처리 중이던 턴의 답은 보내지 않는다
+
+
 # ---------- app ----------
 
 def _log(path: str, outcome: str, started: float) -> None:
@@ -397,8 +470,21 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
                now: Callable[[], float] = time.time) -> Starlette:
     s = settings or Settings.from_env()
     tasks: set[asyncio.Task] = set()  # 백그라운드 태스크가 GC 되지 않도록 참조 유지
-    user_locks = UserLocks()
+    user_locks = UserLocks()           # 콜백 없는 동기 경로에서만 쓴다
     conversations = Conversations(now=now)
+    queues: dict[str, UserQueue] = {}
+    seq = iter(range(1, 1 << 62))
+
+    def spawn(coro) -> asyncio.Task:
+        t = asyncio.create_task(coro)
+        tasks.add(t)
+        t.add_done_callback(tasks.discard)
+        return t
+
+    async def drain() -> None:
+        """테스트·종료용: 대기 타이머와 처리 중인 턴이 모두 끝날 때까지 기다린다."""
+        while tasks:
+            await asyncio.gather(*list(tasks), return_exceptions=True)
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -412,26 +498,101 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
     async def health(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
-    async def callback_job(callback_url: str, user_id: str, text: str, images: list[str], started: float,
-                           conversation: str, new_conv: bool) -> None:
-        c: httpx.AsyncClient = app.state.client
-        outcome = "ok,new_conversation" if new_conv else "ok"
+    async def send_callback(m: Incoming, body: dict[str, Any], outcome: str) -> None:
+        """콜백은 메시지마다 정확히 한 번. 이미 불렀으면 아무것도 하지 않는다."""
+        if m.done:
+            return
+        m.done = True
         try:
-            # 타임아웃은 앞 메시지를 기다린 시간까지 포함한다. callbackUrl 유효 시간이 대기 중에도 흐르기 때문.
-            async with asyncio.timeout(HERMES_TIMEOUT_S):
-                async with user_locks.hold(user_id):
-                    reply = await ask_hermes(s, c, user_id, text, images, conversation)
-        except TimeoutError:
-            reply, outcome = FAIL_MSG, "hermes_timeout"
-        except Exception as e:  # 발화·URL 이 담길 수 있어 예외 메시지는 남기지 않는다
-            reply, outcome = FAIL_MSG, f"hermes_error:{type(e).__name__}"
-        try:
-            r = await c.post(callback_url, json=kakao_reply_body(reply), timeout=CALLBACK_TIMEOUT_S)
+            r = await app.state.client.post(m.callback_url, json=body, timeout=CALLBACK_TIMEOUT_S)
             if not r.is_success:
                 outcome += f",callback_http_{r.status_code}"
         except Exception as e:
             outcome += f",callback_error:{type(e).__name__}"
-        _log("callback", outcome, started)
+        log.info("path=callback seq=%d outcome=%s duration_ms=%d", m.seq, outcome,
+                 (time.monotonic() - m.arrived) * 1000)
+
+    def schedule(user_id: str) -> None:
+        """대기 중인 메시지를 언제 보낼지 정한다: min(첫 도착 + 최대 대기, 마지막 도착 + 대기)."""
+        q = queues[user_id]
+        if q.busy or not q.pending:
+            return
+        if q.timer and not q.timer.done():
+            q.timer.cancel()
+        first, last = q.pending[0], q.pending[-1]
+        if len(q.pending) == 1:
+            wait = s.wait_first_photo_s if (first.images and not first.text) else s.wait_first_text_s
+        else:
+            wait = s.wait_more_s
+        delay = max(0.0, min(first.arrived + s.wait_max_s, last.arrived + wait) - time.monotonic())
+
+        async def fire() -> None:
+            await asyncio.sleep(delay)
+            flush(user_id)
+        q.timer = spawn(fire())
+
+    def flush(user_id: str) -> None:
+        q = queues.get(user_id)
+        if q is None or q.busy or not q.pending:
+            return
+        batch, q.pending, q.timer, q.busy = q.pending, [], None, True
+        log.info("path=batch seq=%d-%d size=%d", batch[0].seq, batch[-1].seq, len(batch))
+        spawn(run_turn(user_id, batch))
+
+    async def run_turn(user_id: str, batch: list[Incoming]) -> None:
+        q = queues[user_id]
+        epoch = q.epoch
+        try:
+            for m in batch[:-1]:                       # 합쳐진 앞 메시지는 바로 닫는다(답은 맨 끝에 붙는다)
+                await send_callback(m, kakao_text_body(CLOSE_MSG), "closed_merged")
+            last = batch[-1]
+            note = BRIDGE_NOTE if q.suppressed_prev else ""
+            turn = [*q.carry, *batch]                  # 답을 보내지 않은 턴의 메시지(이미 콜백을 닫음)를 앞에 다시 넣는다
+            q.suppressed_prev, q.carry = False, []
+            images = [u for m in turn for u in m.images]  # 사진은 반드시 같은 턴에
+            outcome, ok = "ok", True
+            try:
+                # 타임아웃은 이 턴 마지막 메시지 도착부터 센다. callbackUrl 유효 시간이 대기 중에도 흐르기 때문.
+                remaining = max(1.0, HERMES_TIMEOUT_S - (time.monotonic() - last.arrived))
+                async with asyncio.timeout(remaining):
+                    reply = await ask_hermes(s, app.state.client, user_id, compose_turn(turn, note), images,
+                                             last.conversation)
+            except TimeoutError:
+                reply, outcome, ok = FAIL_MSG, "hermes_timeout", False
+            except Exception as e:  # 발화·URL 이 담길 수 있어 예외 메시지는 남기지 않는다
+                reply, outcome, ok = FAIL_MSG, f"hermes_error:{type(e).__name__}", False
+            if q.epoch != epoch:                       # 처리 중에 "처음부터": 답은 종류와 상관없이 보내지 않는다
+                await send_callback(last, kakao_text_body(RESET_DROP_MSG), "dropped_by_reset")
+            elif ok and q.pending and is_question_reply(reply):
+                q.suppressed_prev, q.carry = True, turn
+                await send_callback(last, kakao_text_body(CLOSE_MSG), "suppressed_question")
+            else:
+                await send_callback(last, kakao_reply_body(reply), outcome)
+        finally:
+            q.busy = False
+            for m in batch:                            # 어떤 경우에도 콜백은 한 번씩 (예외로 빠진 경우 대비)
+                await send_callback(m, kakao_text_body(FAIL_MSG), "fail_safe")
+            if q.pending:
+                schedule(user_id)
+            elif not q.timer:
+                queues.pop(user_id, None)
+
+    def reset_user(user_id: str) -> None:
+        """"처음부터": 대기 중이던 메시지는 닫고 버리고, 처리 중인 턴의 답은 보내지 않게 표시한다."""
+        q = queues.get(user_id)
+        if q is None:
+            return
+        if q.timer and not q.timer.done():
+            q.timer.cancel()
+        q.timer = None
+        dropped, q.pending = q.pending, []
+        for m in dropped:
+            spawn(send_callback(m, kakao_text_body(RESET_DROP_MSG), "dropped_by_reset"))
+        q.suppressed_prev, q.carry = False, []
+        if q.busy:
+            q.epoch += 1
+        else:
+            queues.pop(user_id, None)
 
     async def skill(req: Request) -> Response:
         started = time.monotonic()
@@ -447,7 +608,7 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
             body = {}
 
         ur = body.get("userRequest") if isinstance(body.get("userRequest"), dict) else {}
-        text = str(ur.get("utterance") or "").strip()
+        text = neutralize_user_text(str(ur.get("utterance") or "").strip())
         images = extract_image_urls(body)
         user = ur.get("user") if isinstance(ur.get("user"), dict) else {}
         user_id = str(user.get("id") or "unknown")
@@ -455,15 +616,15 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
 
         # '처음부터'·'새로 시작': Hermes 를 부르지 않고 즉시 새 대화로 바꾼다 (콜백 없이 바로 답한다).
         if is_reset(text) and not images:
+            reset_user(user_id)
             conversations.reset(user_id)
             _log("skill", "reset", started)
             return JSONResponse(kakao_text_body(RESET_MSG))
 
         # 대화 ID 는 Hermes 를 부를 때가 아니라 메시지가 도착한 시점에 정한다.
-        # (처음부터 앞에 대기 중이던 메시지는 옛 대화로 마무리된다)
         conversation, new_conv = conversations.current(user_id)
 
-        # 콜백을 못 쓰는 상황(설정 안 됨)이면 동기 응답을 시도하되 4.5초에서 끊는다.
+        # 콜백을 못 쓰는 상황(설정 안 됨)이면 합치지 않고 동기 응답을 시도하되 4.5초에서 끊는다.
         if not callback_url:
             try:
                 async with asyncio.timeout(SYNC_TIMEOUT_S):
@@ -475,11 +636,14 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
             _log("sync", outcome, started)
             return JSONResponse(kakao_reply_body(reply))
 
-        # 비동기 경로: 즉시 ack → 백그라운드에서 Hermes → callbackUrl 로 최종 답
-        t = asyncio.create_task(callback_job(str(callback_url), user_id, text, images, started,
-                                             conversation, new_conv))
-        tasks.add(t)
-        t.add_done_callback(tasks.discard)
+        # 비동기 경로: 즉시 ack → 잠깐 기다렸다 합쳐서 Hermes → 마지막 메시지의 callbackUrl 로 최종 답
+        m = Incoming(next(seq), text, images, str(callback_url), conversation, started)
+        q = queues.setdefault(user_id, UserQueue(pending=[]))
+        merged = 1 if (q.pending or q.busy) else 0
+        q.pending.append(m)
+        log.info("path=arrive seq=%d image=%d text_len=%d merged=%d%s", m.seq, 1 if images else 0, len(text),
+                 merged, ",new_conversation" if new_conv else "")
+        schedule(user_id)
         return JSONResponse({"version": "2.0", "useCallback": True, "data": {"text": QUICK_ACK}})
 
     async def not_found(_: Request, __: Exception) -> Response:
@@ -491,6 +655,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         lifespan=lifespan,
     )
     app.state.tasks = tasks
+    app.state.drain = drain
+    app.state.queues = queues
     app.state.user_locks = user_locks
     app.state.conversations = conversations
     return app
