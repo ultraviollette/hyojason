@@ -189,3 +189,37 @@ def test_slow_page_becomes_unverified_within_budget(monkeypatch):
     monkeypatch.setattr(server, "CHECK_BUDGET_S", 0.05)
     r = _run(_cands("a.test"))["results"][0]
     assert r["show"] is True and r["verdict"] == "unverified" and r["unreadable_reason"] == "시간 안에 못 읽음"
+
+
+def test_drop_reason_line_for_sold_out(monkeypatch):
+    _pages(monkeypatch, {"a.test": (200, SOLD_OUT), "c.test": (200, DOMESTIC)})
+    a, c = _run(_cands("a.test", "c.test"))["results"]
+    assert a["show"] is False and a["drop_reason"] == "품절이에요"     # 기존 규칙: 탈락한 것도 이유 한 줄
+    assert "drop_reason" not in c
+
+
+def test_second_attempt_without_candidates_says_stop(monkeypatch):
+    _pages(monkeypatch, {"a.test": (200, SOLD_OUT)})
+    first = _run(_cands("a.test"))
+    second = _run(_cands("a.test"), attempt=2)
+    assert first["next_step"] == server.NO_CANDIDATE_RETRY and "attempt=2" in first["next_step"]
+    assert second["next_step"] == server.NO_CANDIDATE_STOP and "제가 찾는 방법으로는 못 찾았어요" in second["next_step"]
+
+
+def test_log_line_has_counts_only(monkeypatch, tmp_path):
+    from shopping_tools import profiles
+    monkeypatch.setattr(profiles, "CLIENTS_DIR", tmp_path)
+    cid = server.save_client_profile("kakao", "u-secret-1", payment_places=["네이버", "쿠팡"])["client_id"]
+    lines: list[str] = []
+    monkeypatch.setattr(server._log, "info", lines.append)
+    _pages(monkeypatch, {"smartstore.naver.com": (429, SMARTSTORE_429), "a.test": (200, SOLD_OUT),
+                         "b.test": (200, OVERSEAS)})
+    cands = _cands("smartstore.naver.com", "a.test", "b.test")
+    _run(cands, client_id=cid)
+    assert lines == ["path=check_candidates attempt=1 n=3 naver_rule=1 naver_hosts=1 shown=1 "
+                     "ok=0 unreadable=1 overseas=1 soldout=1 avoid=0 deadline=0 skipped=0"]
+    for secret in ("u-secret-1", cid, "록시땅", "a.test", "http"):
+        assert secret not in lines[0]                                     # 주소·ID·상품명은 남기지 않는다
+    lines.clear()
+    _run(cands)
+    assert "naver_rule=na" in lines[0]                                    # client_id 를 안 주면 모름

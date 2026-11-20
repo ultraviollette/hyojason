@@ -1,4 +1,4 @@
-# 효자손 인수인계 (2026-11-20 기준, c79139a 반영)
+# 효자손 인수인계 (2026-11-20 기준, c79139a·후속 결정 반영)
 
 이어서 작업할 사람(또는 에이전트)을 위한 메모다. 구조 설명은 [architecture.md](architecture.md)에 있고, 여기에는 11/19~20 실사용 시험을 반영하며 바뀐 것만 적는다.
 실제 프로필 내용·시크릿·사용자 ID 는 이 문서에 적지 않는다.
@@ -139,7 +139,14 @@ callback `outcome` 값:
 - `make_search_links` 의 네이버쇼핑 검색 링크(m.search.naver.com)는 이 API 가 아니다.
 
 ### 2-4. 후보 페이지 확인 (`check_candidates`, `mcp/shopping_tools/server.py`)
-- 웹 검색 후보(3-b·1-c)를 답에 내기 전에 한 번 부른다. `candidates=[{url, title, mall}]`, 최대 `MAX_CHECK=3`.
+- 웹 검색 후보(3-b·1-c)를 답에 내기 전에 부른다. `candidates=[{url, title, mall}]`, 최대 `MAX_CHECK=3`. `client_id`(로그의 naver_rule 용), `attempt`(1 또는 2).
+- 한 요청에 2번까지(`MAX_CHECK_ATTEMPTS=2`, 사용자 결정). 후보가 없으면 `next_step` 이 attempt=1 에서는 "3-c 로 한 번 더"(`NO_CANDIDATE_RETRY`), 2 에서는 "더 찾지 말고 '제가 찾는 방법으로는 못 찾았어요.'"(`NO_CANDIDATE_STOP`). attempt 는 에이전트가 넘기는 값이라 코드가 요청 경계를 아는 것은 아니다.
+- `drop_reason`: drop_sold_out "품절이에요", drop_profile "피하시는 조건에 해당해요", drop_deadline "기한 안에 못 와요". 답에서 "✗ 쇼핑몰: 이유" 한 줄로 남긴다(SOUL "탈락한 것도 이유를 한 줄"). 쿠팡·크라우드펀딩·잘못된 주소, 국내 후보가 있어 숨긴 overseas 에는 없다.
+- 로그(stderr, 주소·사용자 ID·상품명 없음, 호출마다 한 줄):
+  `path=check_candidates attempt=<n> n=<확인한 수> naver_rule=<1|0|na> naver_hosts=<smartstore·brand.naver 후보 수> shown=<낸 수> ok= unreadable= overseas= soldout= avoid= deadline= skipped=`
+  - naver_rule: 프로필 places 에 네이버가 있으면 1, 없으면 0, client_id 가 없거나 프로필이 없으면 na.
+  - 읽는 법: naver_rule=1 이고 naver_hosts=0 이면 낸 후보에 네이버가 없었다. 검색 결과에 아예 없었는지는 이 줄로 알 수 없다(Hermes 세션 기록의 web_search 결과로 본다).
+  - stdio MCP 의 stderr 가 어디에 남는지(Hermes 로그 등)는 확인 필요.
 - 후보마다 상품 페이지를 GET 한 번 읽는다(`_check_one`, `check_product` 와 같은 판정). 동시에 읽고, 한 후보에 `CHECK_BUDGET_S=15`초를 넘기면 `unverified`("시간 안에 못 읽음")로 둔다.
 - 쿠팡(`coupang.com`)·크라우드펀딩 주소에는 요청하지 않는다(`drop_not_candidate`). 다시 시도·링크 따라가기·주기적 확인은 없다.
 - `verdict`: `ok` / `unverified`(못 읽음·재고 근거 없음, 내되 밝힘) / `overseas`(해외직구·해외배송·구매대행) / `drop_sold_out` / `drop_profile` / `drop_deadline` / `drop_not_candidate` / `drop_bad_url`.
@@ -196,7 +203,7 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 
 ```bash
 cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 44 passed
-cd mcp && uv run python -m pytest -q                            # MCP: 68 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
 ```
 - 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
 - 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
@@ -221,11 +228,16 @@ cd mcp && uv run python -m pytest -q                            # MCP: 68 passed
 - 카카오 콜백(`callbackUrl`)은 메시지마다 1회, 최대 5분 유효하다.
 
 ## 7. 아직 정해지지 않은 것
-- (c79139a) 후보 확인의 시간·정확도: 지금 값은 `MAX_CHECK=3`, `CHECK_BUDGET_S=15`(제안값). 사용자가 정하기로 했다. 배포 전에 확정한다.
+- 후보 확인의 시간·정확도: `MAX_CHECK=3`, `CHECK_BUDGET_S=15` 로 두고 실사용으로 재 본 뒤 사용자가 정한다.
 - (c79139a) 쇼핑몰별로 페이지를 실제로 읽을 수 있는지(롯데온·LF몰 등)는 확인하지 않았다(작업자는 쇼핑몰에 요청하지 않는다). 실사용 로그로 본다. 확인 필요.
 - (c79139a) "해외직구"·"품절"이 상품이 아니라 메뉴·추천 영역 글자에 있으면 잘못 걸릴 수 있다(본문 앞 6,000자를 통째로 본다). 확인 필요.
-- (c79139a) 비슷한 것 묶음은 날짜로만 묶는다. 같은 날 다른 물건을 비슷한 것으로 또 찾아 드리면 한 묶음이 된다.
-- (c79139a) 네이버 우선(`NAVER_FIRST_NOTE`)이 걸렸는지 관찰할 방법. 제안만 했고 넣지 않았다(c79139a 보고 4번).
+- 네이버 우선을 완전히 구분하는 방법(웹 검색 상품 주소를 최대 10개 넘기고 코드가 네이버를 앞에 두어 3개를 고르며 `seen=… naver_seen=…` 로그): 지금은 하지 않기로 했다.
+
+## 8. 정해진 것 (2026-11-20)
+- 비슷한 것 묶음은 날짜로만 나눈다. 같은 날 다른 물건을 비슷한 것으로 또 찾아 드리면 한 묶음이 된다.
+- check_candidates 는 한 요청에 2번까지. 두 번째에도 없으면 "제가 찾는 방법으로는 못 찾았어요".
+- 품절 등으로 뺀 후보는 기존 규칙대로 이유 한 줄을 남긴다.
+- 네이버 관찰은 check_candidates 의 개수 로그 한 줄로 한다.
 - SOUL.md "절대 규칙"의 쇼핑과 무관한 입력 줄에 있는 "그건 자녀분께 직접 물어보시는 게 좋겠어요" 표현. 지금 파일에서는 38행이다.
   - SKILL 3-b 쪽은 5f4fc69 에서 "가족이나 주변 분께"로 바뀌었다.
 - 배송비를 기록(items)에 남길지.

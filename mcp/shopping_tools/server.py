@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -428,7 +430,37 @@ _NO_FETCH_HOSTS = ("coupang.com",)  # 쿠팡에는 요청하지 않는다(카카
 CHECK_CANDIDATES_NOTE = (
     "show=true 인 후보만 답에 낸다(순서는 그대로). 각 후보의 say 줄은 그 후보의 '제품 · 옵션 · 가격' 줄 바로 아래에 "
     "글자 그대로 쓴다(배송비는 가격 옆 정보다). verdict=overseas 는 다른 후보가 없을 때만 show=true 이고, say 첫 줄 "
-    "'해외배송'을 그 후보 설명 맨 앞에 둔다. drop_* 은 후보로 내지 않는다.")
+    "'해외배송'을 그 후보 설명 맨 앞에 둔다. drop_* 은 후보로 내지 않고, drop_reason 이 있으면 후보 목록 아래에 "
+    "'✗ 쇼핑몰이름: drop_reason' 한 줄로 이유를 남긴다.")
+# 탈락 이유 한 줄(SOUL "탈락한 것도 이유를 한 줄 남긴다"). 쿠팡·크라우드펀딩·잘못된 주소는 후보가 아니라 이유를 남기지 않는다.
+DROP_REASONS = {"drop_sold_out": "품절이에요", "drop_profile": "피하시는 조건에 해당해요",
+                "drop_deadline": "기한 안에 못 와요"}
+# 한 요청에서 check_candidates 는 2번까지(사용자 결정, 2026-11-20). 240초 안에 넣으려는 것이다.
+MAX_CHECK_ATTEMPTS = 2
+NO_CANDIDATE_RETRY = "보여 드릴 후보가 없다. SKILL 3-c 대로 검색어를 바꿔 한 번 더 찾고, check_candidates 를 attempt=2 로 부른다."
+NO_CANDIDATE_STOP = ("보여 드릴 후보가 없다. 이번 요청의 마지막 확인이다. 더 찾지 말고 '제가 찾는 방법으로는 못 찾았어요.'라고 "
+                     "말한 뒤 다음 할 일 하나를 붙인다(SKILL 3-b 7단계).")
+
+# 네이버 우선(NAVER_FIRST_NOTE)이 걸렸는지 보려는 개수 로그. 주소·사용자 ID·상품명은 남기지 않는다.
+# stdio MCP 라 stdout 은 프로토콜이 쓴다. 로그는 stderr 로만 낸다.
+_log = logging.getLogger("hyojason.check_candidates")
+if not _log.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(message)s"))
+    _log.addHandler(_h)
+    _log.setLevel(logging.INFO)
+    _log.propagate = False
+_NAVER_PRODUCT_HOSTS = ("smartstore.naver.com", "brand.naver.com")
+_COUNT_KEYS = (("ok", ("ok",)), ("unreadable", ("unverified",)), ("overseas", ("overseas",)),
+               ("soldout", ("drop_sold_out",)), ("avoid", ("drop_profile",)), ("deadline", ("drop_deadline",)),
+               ("skipped", ("drop_not_candidate", "drop_bad_url")))
+
+
+def _log_line(attempt: int, naver_rule: str, results: list[dict[str, Any]]) -> str:
+    counts = " ".join(f"{name}={sum(r['verdict'] in vs for r in results)}" for name, vs in _COUNT_KEYS)
+    naver_hosts = sum(_host_in(r["url"], _NAVER_PRODUCT_HOSTS) for r in results)
+    return (f"path=check_candidates attempt={attempt} n={len(results)} naver_rule={naver_rule} "
+            f"naver_hosts={naver_hosts} shown={sum(r['show'] for r in results)} {counts}")
 
 
 def _host_in(url: str, domains: tuple[str, ...]) -> bool:
@@ -438,12 +470,14 @@ def _host_in(url: str, domains: tuple[str, ...]) -> bool:
 
 @mcp.tool()
 async def check_candidates(candidates: list[dict[str, str]], deadline: str = "",
-                           forbidden_terms_json: str = "[]") -> dict[str, Any]:
+                           forbidden_terms_json: str = "[]", client_id: str = "",
+                           attempt: int = 1) -> dict[str, Any]:
     """웹 검색으로 고른 후보(상품 페이지)를 답에 내기 전에 한 번에 검증한다(SKILL 3-b, 1-c).
     candidates: [{"url": 상품 페이지 주소(검색 결과 그대로), "title": 검색 결과 제목, "mall": 쇼핑몰 이름}], 최대 3개.
     후보마다 그 상품 페이지를 한 번만 읽는다. 동시에 읽고 전체 15초 안에 못 읽은 것은 '확인하지 못함'으로 돌려준다.
-    반환 results[]: url, show(답에 낼지), verdict, say(그 후보에 붙일 말, 글자 그대로), shipping_fee_krw, buy_url.
-    note 의 규칙을 따른다."""
+    client_id: resolve_client 가 준 값(있으면). attempt: 이번 요청에서 몇 번째 확인인지(1 또는 2). 한 요청에 2번까지만 부른다.
+    반환 results[]: url, show(답에 낼지), verdict, say(그 후보에 붙일 말, 글자 그대로), drop_reason(뺀 이유 한 줄),
+    shipping_fee_krw, buy_url. note 와 next_step 을 따른다."""
     forbidden = json.loads(forbidden_terms_json or "[]")
     dl = gates.parse_deadline(deadline) if deadline else None
 
@@ -468,11 +502,15 @@ async def check_candidates(candidates: list[dict[str, str]], deadline: str = "",
     has_domestic = any(r["verdict"] in ("ok", "unverified") for r in results)
     for r in results:
         r["show"] = r["verdict"] in ("ok", "unverified") or (r["verdict"] == "overseas" and not has_domestic)
+        if r["verdict"] in DROP_REASONS:
+            r["drop_reason"] = DROP_REASONS[r["verdict"]]
     out = {"results": results, "note": CHECK_CANDIDATES_NOTE}
     if len(candidates or []) > MAX_CHECK:
         out["not_checked"] = len(candidates) - MAX_CHECK
     if not any(r["show"] for r in results):
-        out["next_step"] = "보여 드릴 후보가 없다. SKILL 3-c 대로 검색어를 바꿔 다시 찾는다."
+        out["next_step"] = NO_CANDIDATE_STOP if attempt >= MAX_CHECK_ATTEMPTS else NO_CANDIDATE_RETRY
+    profile = profiles.get_profile(client_id) if client_id else None
+    _log.info(_log_line(attempt, "na" if profile is None else str(int(profiles.has_naver(profile))), results))
     return out
 
 
