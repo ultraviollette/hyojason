@@ -33,11 +33,24 @@ shopping_rules:
   default_deadline_days: null  # 기한을 말하지 않으면 묻는다 (null) / 숫자면 기본값
   allow_overseas_when_no_deadline: true
   max_candidates: 3
-  payment: self                # self(본인 결제) | delegate(아래 사람에게 결제 링크 전달)
-  payment_delegate_contact: "" # payment=delegate 일 때
 
 delivery:
   region: ""                   # 예: "지방 중소도시" — 도착일 계산용 (정확한 주소는 저장하지 않는다)
 
+payment:                       # 처음 후보를 드리는 답에서 한 번만 묻는다. 결제 정보·다른 사람 연락처는 저장하지 않는다
+  place: ""                    # 주로 사는 곳(자유 입력, 20자 이내). 예: "쿠팡", "네이버"
+  by: ""                       # "" (아직 안 물음) | self (본인) | family (다른 가족)
+
 notes: []                      # 위 칸에 없는 기타 메모 (예: "라인댄스를 함")
-history: []                    # log_recommendation 이 채움
+
+items: []                      # 찾아 드린(found)·고르신(chosen) 물건. record_item 도구만 쓴다. 최근 50건, 최신이 앞
+# 예시 (가짜 값):
+#  - date: "2026-01-01"
+#    status: chosen             # found(찾아 드림) | chosen(고르심). 실제 결제 여부는 기록하지 않는다
+#    brand: "예시브랜드"
+#    name: "예시 보온병"
+#    options: {용량: "240ml", 색: "네이비"}
+#    seller: "예시몰"
+#    seen_price_krw: 10000      # 그때 본 가격. 확인 못 했으면 null
+
+history: []                    # 예전 log_recommendation 의 기록. 읽기만 하고 더 쓰지 않는다

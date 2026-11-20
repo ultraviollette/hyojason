@@ -5,7 +5,7 @@
   make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
   search_products          provider 구조: 쿠팡 파트너스 → 네이버 (키 있는 것만). 없으면 웹 검색 안내
   check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
-  log_recommendation       추천·선택 기록
+  record_item              찾아 드린(found)·고르신(chosen) 물건 기록 (칸·50건 상한을 코드로 강제)
 
 실행:  uv run --project mcp python -m shopping_tools.server   (stdio)
 """
@@ -31,24 +31,29 @@ mcp = _Server("hyojason-shopping-tools")
 
 # ---------- 클라이언트 프로필 ----------
 
+def _view_response(cid: str | None) -> tuple[dict[str, Any] | None, int]:
+    return profiles.agent_view(profiles.get_profile(cid) if cid else None)
+
+
 @mcp.tool()
 def resolve_client(channel: str, channel_user_id: str) -> dict[str, Any]:
     """대화 시작 시 가장 먼저 부른다. 채널 + 사용자 ID 로 저장된 프로필을 찾는다.
     channel 은 "kakao", channel_user_id 는 메시지 앞 [channel=kakao user_id=...] 의 user_id 값이다.
-    반환: found, client_id(log_recommendation 에 쓸 값), profile. found=false 면 처음 온 분이다."""
+    반환: found, client_id(record_item 에 쓸 값), profile, items_omitted.
+    profile.items 는 고르신 것(chosen) 전부 + 찾아 드린 것(found) 최근 10건만 담는다(최신이 앞).
+    items_omitted 는 빼고 돌려준 오래된 found 건수. found=false 면 처음 온 분이다."""
     cid = profiles.resolve_client_id(channel, channel_user_id)
-    return {"found": cid is not None, "client_id": cid, "profile": profiles.get_profile(cid) if cid else None}
+    view, omitted = _view_response(cid)
+    return {"found": cid is not None, "client_id": cid, "profile": view, "items_omitted": omitted}
 
 
 @mcp.tool()
 def get_client_profile(client_id: str) -> dict[str, Any]:
     """client_id 로 프로필을 읽는다. 없으면 exists=false. 보통은 resolve_client 를 쓴다.
-    client_id 자리에 카카오 user_id 를 넣어도 찾아 준다."""
-    p = profiles.get_profile(client_id)
-    if p is None:
-        cid = profiles.resolve_client_id("kakao", client_id)
-        p = profiles.get_profile(cid) if cid else None
-    return {"exists": p is not None, "profile": p}
+    client_id 자리에 카카오 user_id 를 넣어도 찾아 준다. items 는 resolve_client 와 같은 방식으로 줄여 돌려준다."""
+    cid = client_id if profiles.get_profile(client_id) is not None else profiles.resolve_client_id("kakao", client_id)
+    view, omitted = _view_response(cid)
+    return {"exists": view is not None, "profile": view, "items_omitted": omitted}
 
 
 @mcp.tool()
@@ -56,34 +61,41 @@ def save_client_profile(channel: str, channel_user_id: str, display_name: str = 
                         bottom_size: str = "", shoe_size_mm: str = "", height_cm: str = "", body_notes: str = "",
                         delivery_region: str = "", likes: list[str] | None = None,
                         dislikes: list[str] | None = None, brands_avoid: list[str] | None = None,
-                        price_sensitivity: str = "", notes: list[str] | None = None) -> dict[str, Any]:
+                        price_sensitivity: str = "", notes: list[str] | None = None,
+                        payment_place: str = "", payment_by: str = "") -> dict[str, Any]:
     """프로필을 저장하거나 고친다(같은 사용자면 합친다). 정해진 필드만 받는다. 다른 키는 만들지 않는다.
     channel="kakao", channel_user_id=<[channel=kakao user_id=...] 의 user_id> 는 필수.
     display_name: 부를 호칭(예: 어머니). top_size/bottom_size: 예 "55", "M". shoe_size_mm: 예 "235".
     delivery_region: 배송 지역(시·군 정도, 정확한 주소는 받지 않는다). likes/dislikes: 좋아하는 것/싫어하는 것 목록.
+    payment_place: 주로 사는 곳(자유 입력, 20자 이내, 예: "쿠팡"). payment_by: "self"(본인) | "family"(다른 가족).
+    결제 정보(카드·계좌)와 다른 사람 연락처는 받지 않는다.
     notes: 위에 없는 기타 메모 목록(예: "라인댄스를 함"). 빈 값은 기존 값을 지우지 않고, 목록은 합친다."""
     try:
         profile, created = profiles.upsert_profile(
             channel, channel_user_id, display_name=display_name, top_size=top_size, bottom_size=bottom_size,
             shoe_size_mm=shoe_size_mm, height_cm=height_cm, body_notes=body_notes, delivery_region=delivery_region,
             likes=likes, dislikes=dislikes, brands_avoid=brands_avoid, price_sensitivity=price_sensitivity,
-            notes=notes)
+            notes=notes, payment_place=payment_place, payment_by=payment_by)
     except ValueError as e:
         return {"saved": False, "error": str(e)}
-    return {"saved": True, "created": created, "client_id": profile["client_id"], "profile": profile}
+    view, _ = profiles.agent_view(profile)
+    return {"saved": True, "created": created, "client_id": profile["client_id"], "profile": view}
 
 
 @mcp.tool()
-def log_recommendation(client_id: str, request_json: str, chosen_json: str = "") -> dict[str, Any]:
-    """무엇을 요청받아 무엇을 추천/선택했는지 이력에 남긴다. client_id 는 resolve_client 가 준 값."""
+def record_item(client_id: str, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
+                seller: str = "", seen_price_krw: int | None = None) -> dict[str, Any]:
+    """찾아 드린 물건(status="found")과 사용자가 고른 물건(status="chosen")을 프로필에 남긴다. client_id 는 resolve_client 가 준 값.
+    name: 제품 이름(필수). brand: 브랜드(모르면 비움). options: 그 물건에서 갈리는 것 {"용량": "240ml", "색": "네이비"} (6개까지).
+    seller: 판매처 이름. seen_price_krw: 그때 본 가격(원). 검색 결과나 페이지에 적혀 있던 경우만, 모르면 비운다.
+    결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
+    같은 날 같은 브랜드·이름·옵션의 found 를 chosen 으로 남기면 그 항목이 chosen 으로 바뀐다. 최근 50건까지 보관."""
     try:
-        profiles.append_history(client_id, {
-            "request": json.loads(request_json),
-            "chosen": json.loads(chosen_json) if chosen_json else None,
-        })
+        item = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
+                                    seller=seller, seen_price_krw=seen_price_krw)
     except ValueError as e:
-        return {"logged": False, "error": str(e)}
-    return {"logged": True}
+        return {"recorded": False, "error": str(e)}
+    return {"recorded": True, "item": item}
 
 
 # ---------- 검색 ----------
