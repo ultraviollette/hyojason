@@ -9,6 +9,7 @@
 - 읽을 때는 옛 형식도 standardize() 로 표준 형식으로 바꿔 읽는다. 파일을 고치려면 migrate_profiles 를 쓴다.
 - items: 찾아 드린(found)·고르신(chosen) 물건. record_item 도구만 쓰고, 칸·개수(최근 50건)를 코드로 강제한다.
   실제 결제 여부는 알 수 없으므로 기록하지 않는다. url(상품 페이지 주소)은 선택 칸이고, 옛 기록에는 없다("").
+  match(same | similar)는 찾던 물건 그대로인지 비슷한 것인지다. 옛 기록에는 없다("" 모름).
 - payment: 주로 사는 곳(places, 여러 곳. 옛 형식 place 한 줄도 읽는다)과 결제하는 사람(by: "" 모름 | self | family), 결제 방식을 물어본 날(asked_on).
   결제 질문은 평생 한 번만: record_item(found) 이 정하고 asked_on 을 채운다(스킬 글에 맡기지 않음).
   다른 사람에게 연락하는 칸은 없다.
@@ -34,6 +35,9 @@ CHANNELS = ("kakao", "telegram")
 KST = ZoneInfo("Asia/Seoul")
 
 ITEM_STATUSES = ("found", "chosen")      # found: 찾아 드림, chosen: 고르심
+# found 가 찾던 그 물건인지. same: 같은 물건으로 찾아 드림, similar: "똑같은 건 못 찾았고 비슷한 것"으로 드림,
+# "": 모름(이 칸이 생기기 전 옛 기록). 모르면 같은 물건이라고 묻지 않는다(confirm_phrase).
+ITEM_MATCHES = ("same", "similar", "")
 PAYMENT_BY = ("self", "family")          # self: 본인, family: 다른 가족
 MAX_ITEMS = 50                           # 넘으면 오래된 found 부터 지우고 chosen 은 끝까지 남긴다
 RECENT_FOUND_IN_VIEW = 10                # resolve_client 에는 chosen 전부 + 최근 found 10건만
@@ -272,7 +276,7 @@ def _clean_item(it: Any) -> dict[str, Any]:
     """items 한 건을 정해진 칸으로만 만든다. 칸이 틀리면 ValueError."""
     if not isinstance(it, dict):
         raise ValueError("항목 형식이 아니에요")
-    extra = set(it) - {"date", "status", "brand", "name", "options", "seller", "seen_price_krw", "url"}
+    extra = set(it) - {"date", "status", "brand", "name", "options", "seller", "seen_price_krw", "url", "match"}
     if extra:
         raise ValueError(f"정해지지 않은 칸: {', '.join(sorted(extra))}")
     status = _text(it.get("status"), "status", required=True)
@@ -290,12 +294,15 @@ def _clean_item(it: Any) -> dict[str, Any]:
         price = None
     elif isinstance(price, bool) or not isinstance(price, int) or price <= 0:
         raise ValueError("seen_price_krw 는 확인된 가격(원, 양의 정수)이거나 비워 두어야 해요")
+    match = _text(it.get("match"), "match", limit=10)
+    if match not in ITEM_MATCHES:
+        raise ValueError("match 는 same(같은 물건) | similar(비슷한 것) 중 하나여야 해요")
     date = _text(it.get("date"), "date", required=True, limit=10)
     datetime.strptime(date, "%Y-%m-%d")      # 형식 검사
     return {"date": date, "status": status, "brand": _text(it.get("brand"), "brand"),
             "name": _text(it.get("name"), "name", required=True), "options": clean_opts,
             "seller": _text(it.get("seller"), "seller"), "seen_price_krw": price,
-            "url": _clean_url(it.get("url"))}
+            "url": _clean_url(it.get("url")), "match": match}
 
 
 def _is_blocked_url(url: str) -> bool:
@@ -337,7 +344,7 @@ def _trim_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def record_item(client_id: str, *, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
-                seller: str = "", seen_price_krw: int | None = None, url: str = "",
+                seller: str = "", seen_price_krw: int | None = None, url: str = "", match: str = "",
                 today: str | None = None) -> tuple[dict[str, Any], bool]:
     """찾아 드린(found)·고르신(chosen) 물건을 정해진 칸으로 남긴다. 반환: (남긴 항목, ask_payment).
     chosen 은 같은 날 같은 브랜드·이름·옵션의 found 가 있으면 그 항목을 chosen 으로 바꾼다(두 줄로 남지 않게).
@@ -349,7 +356,7 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
         raise ValueError("프로필이 없어요. 먼저 resolve_client / save_client_profile 로 확인하세요")
     day = today or datetime.now(KST).date().isoformat()
     item = _clean_item({"date": day, "status": status, "brand": brand, "name": name, "options": options,
-                        "seller": seller, "seen_price_krw": seen_price_krw, "url": url})   # 칸이 틀리면 여기서 멈춘다(asked_on 안 채움)
+                        "seller": seller, "seen_price_krw": seen_price_krw, "url": url, "match": match})   # 칸이 틀리면 여기서 멈춘다(asked_on 안 채움)
 
     ask_payment = item["status"] == "found" and not cur["payment"]["by"] and not cur["payment"]["asked_on"]
     if ask_payment:
@@ -365,6 +372,7 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
         if match is not None:            # 같은 물건은 한 줄로: found→chosen 전환, 같은 상태면 최신으로 올림
             old = items.pop(match)
             item = {**item, "seller": item["seller"] or old["seller"], "url": item["url"] or old["url"],
+                    "match": item["match"] or old["match"],
                     "seen_price_krw": item["seen_price_krw"] if item["seen_price_krw"] is not None
                     else old["seen_price_krw"]}
         cur["items"] = _trim_items([item, *items])
@@ -372,13 +380,36 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
     return item, ask_payment
 
 
-def confirm_phrase(item: dict[str, Any]) -> str:
-    """지난 기록을 확인할 때 쓸 문장. found/chosen 구분을 글 규칙에 맡기지 않고 코드가 정한다.
-    23e409b 실사용: found 만 있는 기록에 "지난번 … 맞으세요?"(고르신 물건 문장)로 물었다."""
-    what = " ".join(x for x in (item.get("brand", ""), item.get("name", ""), *(item.get("options") or {}).values()) if x)
+def _what(item: dict[str, Any]) -> str:
+    return " ".join(x for x in (item.get("brand", ""), item.get("name", ""), *(item.get("options") or {}).values()) if x)
+
+
+def confirm_phrase(item: dict[str, Any], group: list[dict[str, Any]] | None = None) -> str:
+    """지난 기록을 확인할 때 쓸 문장. 글 규칙에 맡기지 않고 코드가 정한다.
+    23e409b 실사용: found 만 있는 기록에 "지난번 … 맞으세요?"(고르신 물건 문장)로 물었다.
+    f3f5b0c 실사용: 비슷한 것으로 드린 후보 셋 중 하나를 "지난번에 찾아 드렸던 ○○ 말씀이세요?"로 물어,
+    사진 속 물건이 그 제품이냐는 질문처럼 들렸다. 그래서 같은 물건으로 찾아 드린 것(match=same)만 그 문장을 쓰고,
+    비슷한 것·모르는 것(옛 기록)은 같은 날 함께 드린 후보(group)를 묶어 고를지 다시 찾을지 묻는다."""
+    if item.get("status") == "found" and item.get("match") != "same" and group:
+        what = _what(group[-1])   # 묶음은 최신이 앞이므로 맨 끝이 먼저 기록한 후보(보통 1번). 묶음 안에서는 같은 문장
+    else:
+        what = _what(item)
     if item.get("status") == "chosen":
         return f"지난번 {what} 맞으세요?"
-    return f"지난번에 찾아 드렸던 {what} 말씀이세요?"
+    if item.get("match") == "same":
+        return f"지난번에 찾아 드렸던 {what} 말씀이세요?"
+    n = len(group or [item])
+    like = "비슷한 걸로 " if item.get("match") == "similar" else ""
+    if n <= 1:
+        return f"지난번에 {like}{what} 찾아 드렸어요. 그걸로 보실래요, 다시 찾아볼까요?"
+    return f"지난번에 {like}{what} 등 {n}개 찾아 드렸어요. 그중에서 고르실래요, 다시 찾아볼까요?"
+
+
+def _confirm_group(item: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """같은 날 같은 match 로 함께 드린 found(비슷한 것·모름). 한 번의 답에 낸 후보 묶음으로 본다.
+    같은 날 다른 물건을 비슷한 것으로 또 찾아 드렸으면 함께 묶인다(날짜 말고는 구분할 칸이 없다)."""
+    return [x for x in items if x["status"] == "found" and x.get("match", "") != "same"
+            and x["date"] == item["date"] and x.get("match", "") == item.get("match", "")]
 
 
 def has_coupang(profile: dict[str, Any] | None) -> bool:
@@ -396,7 +427,8 @@ def agent_view(profile: dict[str, Any] | None) -> tuple[dict[str, Any] | None, i
         return None, 0
     view = copy.deepcopy(profile)
     for it in view["items"]:
-        it["confirm_phrase"] = confirm_phrase(it)
+        group = _confirm_group(it, view["items"]) if it["status"] == "found" and it.get("match") != "same" else None
+        it["confirm_phrase"] = confirm_phrase(it, group)
     found_kept, kept, omitted = 0, [], 0
     for it in view["items"]:
         if it["status"] == "chosen":

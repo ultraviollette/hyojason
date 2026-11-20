@@ -199,12 +199,13 @@ def test_record_item_schema_is_enforced() -> None:
                             seller="11번가", seen_price_krw=18900)
     assert ok["recorded"] is True
     item = ok["item"]
-    assert set(item) == {"date", "status", "brand", "name", "options", "seller", "seen_price_krw", "url"}
+    assert set(item) == {"date", "status", "brand", "name", "options", "seller", "seen_price_krw", "url", "match"}
+    assert item["match"] == ""                                            # 선택 칸: 안 주면 모름
     assert item["url"] == ""                                              # 선택 칸: 안 주면 빈 값
     assert len(item["date"]) == 10 and item["seen_price_krw"] == 18900
     bad = [dict(status="bought"), dict(name=" "), dict(seen_price_krw=0), dict(seen_price_krw=-1),
            dict(seen_price_krw="18900"), dict(seen_price_krw=True), dict(options=["240ml"]),
-           dict(options={str(i): "x" for i in range(7)}), dict(seller="가" * 81)]
+           dict(options={str(i): "x" for i in range(7)}), dict(seller="가" * 81), dict(match="exact")]
     for kw in bad:
         args = {"status": "found", "name": "텀블러", **kw}
         assert server.record_item(cid, **args)["recorded"] is False, kw
@@ -371,7 +372,7 @@ def test_old_items_without_url_still_read_and_url_is_filled_later(tmp_clients) -
 def test_confirm_phrase_differs_for_found_and_chosen() -> None:
     cid = _cid()
     profiles.record_item(cid, status="found", name="플라워 텀블러", brand="ELO",
-                         options={"색": "네이비", "용량": "240ml"}, today="2026-11-19")
+                         options={"색": "네이비", "용량": "240ml"}, match="same", today="2026-11-19")
     profiles.record_item(cid, status="chosen", name="보온병", brand="예시", today="2026-11-18")
     by_name = {i["name"]: i["confirm_phrase"] for i in server.resolve_client("kakao", KAKAO_ID)["profile"]["items"]}
     assert by_name["플라워 텀블러"] == "지난번에 찾아 드렸던 ELO 플라워 텀블러 네이비 240ml 말씀이세요?"
@@ -433,3 +434,59 @@ def test_naver_in_places_puts_naver_first_rule() -> None:
 def test_coupang_and_naver_both_rules_coupang_first() -> None:
     r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["쿠팡", "네이버"])
     assert r["place_rules"] == [server.COUPANG_FIRST_NOTE, server.NAVER_FIRST_NOTE]   # 쿠팡 줄이 답 맨 앞
+
+
+# ---------- 비슷한 것으로 드린 기록(match=similar): 같은 물건이냐고 묻지 않는다 ----------
+
+def test_similar_found_asks_to_pick_among_group_not_identity() -> None:
+    """f3f5b0c 실사용: 브랜드 모르는 귀마개 사진에 비슷한 것 셋을 드렸는데, 다시 온 사진에
+    "지난번에 찾아 드렸던 엑스웜 … 말씀이세요?"라고 물었다(사진 속 물건이 그 제품이냐는 질문처럼 들림)."""
+    cid = _cid()
+    for name in ("페이크퍼 접이식 귀마개", "털 귀마개", "니트 귀마개"):
+        server.record_item(cid, "found", name, brand="예시" if name.startswith("페") else "", match="similar")
+    items = server.resolve_client("kakao", KAKAO_ID)["profile"]["items"]
+    phrases = {i["confirm_phrase"] for i in items}
+    assert len(phrases) == 1                                                     # 세 후보가 한 문장으로 묶인다
+    p = phrases.pop()
+    assert p.startswith("지난번에 비슷한 걸로 ") and " 등 3개 찾아 드렸어요." in p
+    assert p.endswith("그중에서 고르실래요, 다시 찾아볼까요?")
+    assert "말씀이세요" not in p
+
+
+def test_similar_single_and_old_unknown_match_do_not_ask_identity(tmp_clients) -> None:
+    cid = _cid()
+    server.record_item(cid, "found", "털 귀마개", match="similar")
+    p = server.resolve_client("kakao", KAKAO_ID)["profile"]["items"][0]["confirm_phrase"]
+    assert p == "지난번에 비슷한 걸로 털 귀마개 찾아 드렸어요. 그걸로 보실래요, 다시 찾아볼까요?"
+    # 옛 기록(match 칸 없음)은 같은 물건인지 모르므로 "말씀이세요?"로 묻지 않는다. 파일은 그대로 읽힌다.
+    raw = yaml.safe_load((tmp_clients / f"{cid}.yaml").read_text(encoding="utf-8"))
+    for it in raw["items"]:
+        it.pop("match")
+    raw["items"].append({"date": raw["items"][0]["date"], "status": "found", "brand": "", "name": "니트 귀마개",
+                         "options": {}, "seller": "", "seen_price_krw": None})
+    (tmp_clients / f"{cid}.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    items = server.resolve_client("kakao", KAKAO_ID)["profile"]["items"]
+    assert {i["match"] for i in items} == {""}
+    assert items[0]["confirm_phrase"].endswith("등 2개 찾아 드렸어요. 그중에서 고르실래요, 다시 찾아볼까요?")
+    assert "비슷한 걸로" not in items[0]["confirm_phrase"] and "말씀이세요" not in items[0]["confirm_phrase"]
+
+
+def test_same_and_similar_are_not_grouped_and_match_survives_chosen() -> None:
+    cid = _cid()
+    server.record_item(cid, "found", "플라워 텀블러", brand="ELO", match="same")
+    server.record_item(cid, "found", "꽃무늬 보온병", match="similar")
+    by_name = {i["name"]: i["confirm_phrase"] for i in server.resolve_client("kakao", KAKAO_ID)["profile"]["items"]}
+    assert by_name["플라워 텀블러"] == "지난번에 찾아 드렸던 ELO 플라워 텀블러 말씀이세요?"
+    assert "꽃무늬 보온병 찾아 드렸어요" in by_name["꽃무늬 보온병"]                # 같은 날이어도 same 과 묶이지 않는다
+    server.record_item(cid, "chosen", "꽃무늬 보온병")                             # 고르실 때 match 를 안 줘도 지킨다
+    item = profiles.get_profile(cid)["items"][0]
+    assert item["status"] == "chosen" and item["match"] == "similar"
+
+
+def test_confirm_note_is_in_replies_when_there_are_items() -> None:
+    assert "confirm_note" not in server.resolve_client("kakao", KAKAO_ID)        # 처음 온 분
+    cid = _cid()
+    assert "confirm_note" not in server.resolve_client("kakao", KAKAO_ID)        # 기록 없음
+    server.record_item(cid, "found", "털 귀마개", match="similar")
+    note = server.resolve_client("kakao", KAKAO_ID)["confirm_note"]
+    assert "첫 글자부터" in note and "프로필" in note and "해요체" in note

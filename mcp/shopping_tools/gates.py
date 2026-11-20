@@ -28,7 +28,7 @@ try:
     class ProductGates(BaseModel):
         """상품 페이지 텍스트를 보고 네 가지를 판정한다. 상품 1개 = Jev 호출 1번."""
         in_stock: bool = Field(description="지금 바로 주문할 수 있는 재고가 있다 (품절·재입고 대기·판매 종료가 아니다)")
-        domestic_shipping: bool = Field(description="국내에서 발송된다 (해외 직구·해외 배송이 아니다)")
+        domestic_shipping: bool = Field(description="국내에서 발송된다 (해외 직구·해외 배송·구매대행이 아니다)")
         arrives_by_deadline: bool = Field(description="본문에 적힌 '필요 기한'까지 도착할 수 있다. 기한이 '없음'이면 참")
         violates_profile: bool = Field(description="본문에 적힌 '피해야 할 조건' 중 하나에 해당한다. 조건이 '없음'이면 거짓")
 
@@ -50,7 +50,7 @@ def _jev_decide_all(evidence: str, *, deadline: date | None, forbidden: list[str
 # ---------- 규칙 기반 폴백 ----------
 
 _OUT_OF_STOCK = re.compile(r"(품절|일시\s*품절|재입고|sold\s*out|구매\s*불가|판매\s*종료|단종)", re.I)
-_OVERSEAS = re.compile(r"(해외\s*직구|해외\s*배송|직구|관세|통관|배송\s*기간\s*\d+\s*~?\s*\d*\s*주|aliexpress|알리익스프레스|큐텐|qoo10|taobao|아마존|amazon)", re.I)
+_OVERSEAS = re.compile(r"(해외\s*직구|해외\s*배송|구매\s*대행|직구|관세|통관|배송\s*기간\s*\d+\s*~?\s*\d*\s*주|aliexpress|알리익스프레스|큐텐|qoo10|taobao|아마존|amazon)", re.I)
 _FAST = re.compile(r"(로켓배송|로켓와우|오늘\s*출발|당일\s*출발|내일\s*도착|익일\s*배송|새벽배송|빠른배송)", re.I)
 
 

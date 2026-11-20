@@ -4,18 +4,20 @@
   resolve_client / get_client_profile / save_client_profile(정해진 필드만, 저장·수정 겸용)
   make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
   search_products          provider 구조: 쿠팡 파트너스 → 네이버 (키 있는 것만). 없으면 웹 검색 안내
-  check_product            상품 페이지를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
+  check_product            사용자가 보낸 링크 하나를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
+  check_candidates         웹 검색 후보 최대 3개를 동시에 읽고 낼지(show)·붙일 말(say)을 정함
   record_item              찾아 드린(found)·고르신(chosen) 물건 기록 (칸·50건 상한을 코드로 강제)
 
 실행:  uv run --project mcp python -m shopping_tools.server   (stdio)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -59,10 +61,19 @@ def _place_rules(profile: dict[str, Any] | None) -> list[str]:
     return rules
 
 
+# f3f5b0c 실사용: 확인 질문 앞에 "사진을 확인했습니다. 베이지색 털 귀마개네요. 프로필에 비슷한 걸 찾아 드린 기록이 있습니다."가
+# 붙었다(합쇼체, 내부 용어, 군말). 확인 문장처럼 도구 응답에 싣는다.
+CONFIRM_NOTE = ("지난 물건을 확인할 때는 답의 첫 글자부터 그 item 의 confirm_phrase 를 글자 그대로 쓴다. 그 앞에 사진 설명"
+                "('사진을 확인했어요', '○○네요')이나 기록 이야기를 붙이지 않는다. '프로필', '기록', '저장', '도구' 같은 말은 "
+                "사용자에게 하지 않는다. 말투는 해요체('~해요', '~세요')만 쓰고 '~습니다', '~합니다'는 쓰지 않는다.")
+
+
 def _with_place_rules(out: dict[str, Any], profile: dict[str, Any] | None) -> dict[str, Any]:
     rules = _place_rules(profile)
     if rules:
         out["place_rules"] = rules
+    if profile and profile.get("items"):
+        out["confirm_note"] = CONFIRM_NOTE
     return out
 
 
@@ -72,7 +83,8 @@ def resolve_client(channel: str, channel_user_id: str) -> dict[str, Any]:
     channel 은 "kakao", channel_user_id 는 메시지 앞 [channel=kakao user_id=...] 의 user_id 값이다.
     반환: found, client_id(record_item 에 쓸 값), profile, items_omitted, place_rules(있을 때만).
     profile.items 는 고르신 것(chosen) 전부 + 찾아 드린 것(found) 최근 10건만 담는다(최신이 앞).
-    지난 기록을 확인할 때는 그 item 의 confirm_phrase 를 그대로 쓴다(고르심/찾아 드림 구분이 들어 있다).
+    지난 기록을 확인할 때는 그 item 의 confirm_phrase 를 그대로 쓴다(고르심/같은 물건/비슷한 것 구분이 들어 있다).
+    confirm_note 가 있으면 따른다(확인 질문은 바로 그 문장으로 시작한다).
     item.url 이 있으면 확인받은 뒤 다시 검색하지 않고 그 주소를 드린다(seen_price_krw 는 그 날짜에 본 가격).
     place_rules 가 있으면 후보를 드리는 답에서 반드시 따른다. items_omitted 는 빼고 돌려준 오래된 found 건수.
     found=false 면 처음 온 분이다."""
@@ -125,19 +137,23 @@ def save_client_profile(channel: str, channel_user_id: str, display_name: str = 
 
 @mcp.tool()
 def record_item(client_id: str, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
-                seller: str = "", seen_price_krw: int | None = None, url: str = "") -> dict[str, Any]:
+                seller: str = "", seen_price_krw: int | None = None, url: str = "",
+                match: str = "") -> dict[str, Any]:
     """찾아 드린 물건(status="found")과 사용자가 고른 물건(status="chosen")을 프로필에 남긴다. client_id 는 resolve_client 가 준 값.
     name: 제품 이름(필수). brand: 브랜드(모르면 비움). options: 그 물건에서 갈리는 것 {"용량": "240ml", "색": "네이비"} (6개까지).
     seller: 판매처 이름. seen_price_krw: 그때 본 실제 판매가(원, 줄 그어진 정가가 아님). 적혀 있던 경우만, 모르면 비운다.
     url: 답에 링크로 드린 상품 페이지 주소(도구·검색 결과가 준 그대로). 검색 결과 페이지 주소는 넣지 않는다.
     크라우드펀딩(와디즈·텀블벅) 주소는 거절된다(후보가 아니다).
+    match: found 일 때 반드시 채운다. "same" = 찾던 그 물건으로 드림(브랜드·제품명이 확인된 경우),
+    "similar" = "똑같은 건 못 찾았고 비슷한 것"·"닮은 제품"으로 드림(브랜드를 모르는 사진이면 항상 similar).
     결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
     같은 날 같은 브랜드·이름·옵션의 found 를 chosen 으로 남기면 그 항목이 chosen 으로 바뀐다. 최근 50건까지 보관.
     ask_payment 가 true 일 때만 이번 답 끝에 결제 방식 질문을 붙인다. 도구가 평생 한 번만 true 를 준다.
     결제 질문은 후보와 링크를 모두 쓴 답의 맨 끝에만 붙인다. 결제 질문만 있는 답은 쓰지 않는다(ask_payment_note)."""
     try:
         item, ask_payment = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
-                                                 seller=seller, seen_price_krw=seen_price_krw, url=url)
+                                                 seller=seller, seen_price_krw=seen_price_krw, url=url,
+                                                 match=match)
     except ValueError as e:
         return {"recorded": False, "error": str(e), "ask_payment": False}
     out = {"recorded": True, "item": item, "ask_payment": ask_payment}
@@ -274,22 +290,31 @@ async def _fetch_page(url: str, limit: int = 6000, *, transport: httpx.AsyncBase
     return Page(text, str(r.url), r.status_code, None, page_title)
 
 
-@mcp.tool()
-async def check_product(product_url: str, title: str = "", mall: str = "",
-                        deadline: str = "", forbidden_terms_json: str = "[]") -> dict[str, Any]:
-    """product_url에는 search_products가 돌려준 url을 그대로 넣는다. product_id가 아니다.
-    상품 하나를 검증한다. deadline 은 '이번 주 안', '수요일까지', '2026-11-12' 등.
-    반환: in_stock / domestic_shipping / arrives_by_deadline / violates_profile (yes|no|unknown), note, buy_url,
-          readable(페이지를 읽었는지), unreadable_reason, kids_item(상품명에 아동/키즈/주니어).
-    readable=false 이면 in_stock 은 unknown 이고 passed 는 false 다. 이때 '품절'이라고 말하면 안 된다.
-    """
-    forbidden = json.loads(forbidden_terms_json or "[]")
-    dl = gates.parse_deadline(deadline) if deadline else None
+_FEE = re.compile(r"배송비\s*[:：]?\s*(무료|\d{1,3}(?:,\d{3})+\s*원|\d+\s*원)")
+_FREE_SHIP = re.compile(r"무료\s*배송")
+
+
+def _shipping_fee(text: str) -> tuple[int | None, bool]:
+    """본문에서 배송비를 뽑는다. 반환: (원, 조건부 무료인지). 0 은 무료, None 은 모름.
+    "배송비 X" 값이 하나로 정해질 때만 그 값을 쓴다. 값이 여럿이면(옵션·지역별) 모름으로 둔다.
+    값이 있는데 "무료배송" 문구도 있으면 "5만원 이상 무료" 같은 조건부로 본다."""
+    fees = {0 if m.group(1) == "무료" else int(re.sub(r"\D", "", m.group(1))) for m in _FEE.finditer(text or "")}
+    if len(fees) == 1:
+        fee = fees.pop()
+        return fee, fee > 0 and bool(_FREE_SHIP.search(text))
+    if not fees and _FREE_SHIP.search(text or ""):
+        return 0, False
+    return None, False
+
+
+async def _check_one(product_url: str, title: str, mall: str, dl, forbidden: list[str]) -> dict[str, Any]:
+    """상품 페이지 하나를 한 번 읽고(GET 1번, 다시 시도·다른 페이지 따라가기 없음) 판정한다."""
     page = await _fetch_page(product_url)
     page_text = page.text
     evidence = f"{title} {mall} {page_text}"
 
-    result, engine = gates.decide_all(evidence, deadline=dl, forbidden=forbidden)
+    # Jev 는 동기 호출이라 여러 후보를 동시에 볼 때 서로 막지 않게 스레드에서 돌린다
+    result, engine = await asyncio.to_thread(gates.decide_all, evidence, deadline=dl, forbidden=forbidden)
 
     # 재고는 페이지에 근거(품절 표시 또는 구매 버튼 문구)가 있을 때만 판정한다.
     unreadable = page.unreadable_reason
@@ -301,6 +326,7 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
         result["in_stock"] = "yes"
 
     kids = _KIDS.search(f"{title} {page.page_title}")
+    fee, fee_conditional = _shipping_fee(page_text)
 
     notes = []
     if kids:
@@ -321,12 +347,16 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
               and (dl is None or result["arrives_by_deadline"] != "no")
               and (dl is None or result["domestic_shipping"] != "no"))
 
+    verdict, say = _candidate_verdict(result, unreadable, dl, fee, fee_conditional, kids is not None)
     return {
         **result,
         "passed": passed,
         "readable": unreadable is None,
         "unreadable_reason": unreadable,
         "kids_item": kids is not None,
+        "shipping_fee_krw": fee,
+        "verdict": verdict,
+        "say": say,
         "http_status": page.status,
         "deadline_parsed": dl.isoformat() if dl else None,
         "note": " / ".join(notes) or "특이사항 없음",
@@ -334,6 +364,116 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
         "evidence_chars": len(page_text),
         "gate_engine": engine,  # 'jev' | 'rules'
     }
+
+
+OVERSEAS_SAY = "해외배송 · 외국에서 오는 거라 2주쯤 걸려요"
+UNVERIFIED_SAY = "재고와 배송비는 확인하지 못했어요"
+
+
+def _candidate_verdict(result: dict[str, Any], unreadable: str | None, dl, fee: int | None,
+                       fee_conditional: bool, kids: bool) -> tuple[str, list[str]]:
+    """후보로 낼지와 그 후보에 붙일 말을 코드가 정한다(글 규칙만으로는 실사용에서 해외직구를 밝히지 않았다).
+    verdict: ok | unverified(못 읽음, 내되 밝힘) | overseas(다른 후보가 없을 때만) |
+             drop_sold_out | drop_profile | drop_deadline"""
+    if result["in_stock"] == "no":
+        return "drop_sold_out", []
+    if result["violates_profile"] == "yes":
+        return "drop_profile", []
+    if dl is not None and (result["arrives_by_deadline"] == "no" or result["domestic_shipping"] == "no"):
+        return "drop_deadline", []
+    say = []
+    verdict = "ok"
+    if result["domestic_shipping"] == "no":
+        verdict = "overseas"
+        say.append(OVERSEAS_SAY)
+    if kids:
+        say.append("아동용 상품이에요")
+    stock_unknown = result["in_stock"] == "unknown"
+    if stock_unknown and fee is None:
+        say.append(UNVERIFIED_SAY)
+    elif stock_unknown:
+        say.append("재고는 확인하지 못했어요")
+    elif fee is None:
+        say.append("배송비는 확인하지 못했어요")
+    if fee is not None:
+        say.append("무료배송" if fee == 0 else
+                   f"배송비 {fee:,}원 따로" + (" (조건에 따라 무료일 수 있어요)" if fee_conditional else ""))
+    if verdict == "ok" and (unreadable is not None or stock_unknown):
+        verdict = "unverified"
+    return verdict, say
+
+
+@mcp.tool()
+async def check_product(product_url: str, title: str = "", mall: str = "",
+                        deadline: str = "", forbidden_terms_json: str = "[]") -> dict[str, Any]:
+    """사용자가 보낸 링크 하나를 검증할 때 쓴다(SKILL 1-b). 검색으로 찾은 후보는 check_candidates 로 한 번에 본다.
+    product_url에는 사용자가 보낸 주소(또는 search_products 가 돌려준 url)를 그대로 넣는다. product_id가 아니다.
+    deadline 은 '이번 주 안', '수요일까지', '2026-11-12' 등.
+    반환: in_stock / domestic_shipping / arrives_by_deadline / violates_profile (yes|no|unknown), note, buy_url,
+          readable(페이지를 읽었는지), unreadable_reason, kids_item(상품명에 아동/키즈/주니어),
+          shipping_fee_krw(0 무료, null 모름), verdict, say(그 상품에 붙일 말).
+    readable=false 이면 in_stock 은 unknown 이고 passed 는 false 다. 이때 '품절'이라고 말하면 안 된다.
+    """
+    forbidden = json.loads(forbidden_terms_json or "[]")
+    dl = gates.parse_deadline(deadline) if deadline else None
+    return await _check_one(product_url, title, mall, dl, forbidden)
+
+
+# 후보 검증 상한. 후보마다 상품 페이지를 GET 한 번 읽는다(사용자 요청에 대한 답으로 보여 줄 페이지만).
+# 동시에 읽으므로 걸리는 시간은 가장 느린 페이지 하나 + 도구 호출 한 번이다. 카카오 콜백 240초 안에 넣으려고 상한을 둔다.
+MAX_CHECK = 3
+CHECK_BUDGET_S = 15
+_NO_FETCH_HOSTS = ("coupang.com",)  # 쿠팡에는 요청하지 않는다(카카오에서 링크도 막혀 후보가 아니다)
+
+CHECK_CANDIDATES_NOTE = (
+    "show=true 인 후보만 답에 낸다(순서는 그대로). 각 후보의 say 줄은 그 후보의 '제품 · 옵션 · 가격' 줄 바로 아래에 "
+    "글자 그대로 쓴다(배송비는 가격 옆 정보다). verdict=overseas 는 다른 후보가 없을 때만 show=true 이고, say 첫 줄 "
+    "'해외배송'을 그 후보 설명 맨 앞에 둔다. drop_* 은 후보로 내지 않는다.")
+
+
+def _host_in(url: str, domains: tuple[str, ...]) -> bool:
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
+@mcp.tool()
+async def check_candidates(candidates: list[dict[str, str]], deadline: str = "",
+                           forbidden_terms_json: str = "[]") -> dict[str, Any]:
+    """웹 검색으로 고른 후보(상품 페이지)를 답에 내기 전에 한 번에 검증한다(SKILL 3-b, 1-c).
+    candidates: [{"url": 상품 페이지 주소(검색 결과 그대로), "title": 검색 결과 제목, "mall": 쇼핑몰 이름}], 최대 3개.
+    후보마다 그 상품 페이지를 한 번만 읽는다. 동시에 읽고 전체 15초 안에 못 읽은 것은 '확인하지 못함'으로 돌려준다.
+    반환 results[]: url, show(답에 낼지), verdict, say(그 후보에 붙일 말, 글자 그대로), shipping_fee_krw, buy_url.
+    note 의 규칙을 따른다."""
+    forbidden = json.loads(forbidden_terms_json or "[]")
+    dl = gates.parse_deadline(deadline) if deadline else None
+
+    async def one(c: dict[str, str]) -> dict[str, Any]:
+        url = str(c.get("url", "")).strip()
+        if not re.match(r"^https?://", url, re.I):
+            return {"url": url, "verdict": "drop_bad_url", "say": [], "checked": False}
+        if profiles._is_blocked_url(url) or _host_in(url, _NO_FETCH_HOSTS):
+            return {"url": url, "verdict": "drop_not_candidate", "say": [], "checked": False}
+        try:
+            r = await asyncio.wait_for(_check_one(url, c.get("title", ""), c.get("mall", ""), dl, forbidden),
+                                       CHECK_BUDGET_S)
+        except TimeoutError:
+            return {"url": url, "verdict": "unverified", "say": [UNVERIFIED_SAY], "checked": False,
+                    "unreadable_reason": "시간 안에 못 읽음", "buy_url": url, "shipping_fee_krw": None}
+        return {"url": url, "checked": True, **{k: r[k] for k in (
+            "verdict", "say", "shipping_fee_krw", "buy_url", "readable", "unreadable_reason", "in_stock",
+            "domestic_shipping", "kids_item", "note")}}
+
+    picked = list(candidates or [])[:MAX_CHECK]
+    results = list(await asyncio.gather(*(one(c) for c in picked)))
+    has_domestic = any(r["verdict"] in ("ok", "unverified") for r in results)
+    for r in results:
+        r["show"] = r["verdict"] in ("ok", "unverified") or (r["verdict"] == "overseas" and not has_domestic)
+    out = {"results": results, "note": CHECK_CANDIDATES_NOTE}
+    if len(candidates or []) > MAX_CHECK:
+        out["not_checked"] = len(candidates) - MAX_CHECK
+    if not any(r["show"] for r in results):
+        out["next_step"] = "보여 드릴 후보가 없다. SKILL 3-c 대로 검색어를 바꿔 다시 찾는다."
+    return out
 
 
 if __name__ == "__main__":

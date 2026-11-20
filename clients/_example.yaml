@@ -54,5 +54,6 @@ items: []                      # 찾아 드린(found)·고르신(chosen) 물건.
 #    seller: "예시몰"
 #    seen_price_krw: 10000      # 그때 본 실제 판매가(정가 아님). 확인 못 했으면 null
 #    url: "https://example.com/products/1"   # 선택. 답에 드린 상품 페이지 주소. 옛 기록에는 없다. 크라우드펀딩 주소는 받지 않는다
+#    match: similar             # same(찾던 그 물건) | similar(비슷한 것으로 드림) | ""(모름, 옛 기록). 확인 문장이 달라진다
 
 history: []                    # 예전 log_recommendation 의 기록. 읽기만 하고 더 쓰지 않는다
