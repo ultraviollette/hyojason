@@ -45,6 +45,7 @@ MAX_URL = 500
 # 후보로 내면 안 되는 판매처(크라우드펀딩). 카카오 브릿지 BLOCKED_LINK_DOMAINS 와 같은 목록이다.
 BLOCKED_ITEM_DOMAINS = ("wadiz.kr", "tumblbug.com")
 _COUPANG = re.compile(r"(쿠팡|coupang)", re.I)
+_NAVER = re.compile(r"(네이버|naver|스마트스토어|smartstore)", re.I)
 
 
 # ---------- 표준 스키마 ----------
@@ -382,6 +383,10 @@ def confirm_phrase(item: dict[str, Any]) -> str:
 
 def has_coupang(profile: dict[str, Any] | None) -> bool:
     return bool(profile) and any(_COUPANG.search(x) for x in profile["payment"]["places"])
+
+
+def has_naver(profile: dict[str, Any] | None) -> bool:
+    return bool(profile) and any(_NAVER.search(x) for x in profile["payment"]["places"])
 
 
 def agent_view(profile: dict[str, Any] | None) -> tuple[dict[str, Any] | None, int]:

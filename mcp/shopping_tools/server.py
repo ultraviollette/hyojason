@@ -42,8 +42,21 @@ COUPANG_FIRST_NOTE = ("주로 사는 곳에 쿠팡이 있다. 후보를 드리�
                       "답 맨 앞에 두고, 다른 곳 후보를 이어서 보여 준다. '쿠팡에서는 못 찾았어요'라고 말하지 않는다.")
 
 
+# 주로 사는 곳에 네이버가 있을 때(사용자 결정 A, 2026-11-20). 효자손은 네이버 상품 페이지 본문을 읽지 못하므로
+# 웹 검색 결과에 나온 스마트스토어·브랜드스토어 상품 페이지를 앞에 두는 것까지만 한다.
+NAVER_FIRST_NOTE = ("주로 사는 곳에 네이버가 있다. 웹 검색 후보 중 네이버 스마트스토어(smartstore.naver.com)·"
+                    "브랜드스토어(brand.naver.com) 상품 페이지를 다른 가게 후보보다 앞에 둔다(후보 번호도 앞 번호). "
+                    "검색 결과 페이지는 후보가 아니다. 웹 검색에 네이버 상품 페이지가 없으면 다른 가게 후보를 그대로 보여 주고, "
+                    "네이버를 직접 확인한 것이 아니므로 '네이버에서는 못 찾았어요'라고 말하지 않는다.")
+
+
 def _place_rules(profile: dict[str, Any] | None) -> list[str]:
-    return [COUPANG_FIRST_NOTE] if profiles.has_coupang(profile) else []
+    rules = []
+    if profiles.has_coupang(profile):
+        rules.append(COUPANG_FIRST_NOTE)
+    if profiles.has_naver(profile):
+        rules.append(NAVER_FIRST_NOTE)
+    return rules
 
 
 def _with_place_rules(out: dict[str, Any], profile: dict[str, Any] | None) -> dict[str, Any]:
@@ -137,6 +150,8 @@ def record_item(client_id: str, status: str, name: str, brand: str = "", options
 
 # ---------- 검색 ----------
 
+# 네이버 쇼핑 검색 API 는 2026-07-31 종료(네이버 개발자센터 공지, 사용자 확인). 이 경로는 지우지 않고 남겨 둔다.
+# 키가 없으면 has_credentials 가 False 라 호출하지 않는다.
 async def _naver_provider(query: str, max_results: int, sort: str) -> dict[str, Any]:
     return {"items": await naver.search(query, max_results=max_results, sort=sort), "error": None}
 
@@ -149,7 +164,7 @@ async def _partners_provider(query: str, max_results: int, sort: str) -> dict[st
 # 쿠팡 임시 스크레이퍼(coupang_scrape)는 키 없이 쿠팡에 자동 요청을 보내고 매번 403 이라 기본 경로에서 뺐다.
 SEARCH_PROVIDERS = (
     ("coupang_partners", coupang_partners.is_enabled, _partners_provider),  # 키 + COUPANG_PARTNERS_VERIFIED=1
-    ("naver_shopping", naver.has_credentials, _naver_provider),
+    ("naver_shopping", naver.has_credentials, _naver_provider),            # 2026-07-31 종료된 API (naver.py 참고)
 )
 
 

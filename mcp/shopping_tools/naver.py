@@ -1,5 +1,8 @@
 """네이버 쇼핑 검색 API 래퍼.
 
+2026-07-31 종료: 네이버 쇼핑 검색 API 는 이날 종료됐다(네이버 개발자센터 공지, 사용자가 원문 확인).
+지우지 않고 남겨 두지만 쓰지 않는다. make_search_links 의 네이버쇼핑 검색 링크(m.search.naver.com)는 이 API 가 아니다.
+
 문서: https://developers.naver.com/docs/serviceapi/search/shopping/shopping.md
 키가 없으면 MOCK 결과를 돌려준다 (개발·데모용).
 """
@@ -12,7 +15,7 @@ from typing import Any
 
 import httpx
 
-NAVER_URL = "https://openapi.naver.com/v1/search/shop.json"
+NAVER_URL = "https://openapi.naver.com/v1/search/shop.json"   # 2026-07-31 종료
 _TAG = re.compile(r"<[^>]+>")
 
 # 네이버 응답의 productType: 1~3 일반상품(가격비교/카탈로그/단품), 4~6 중고, 7~9 단종, 10~12 판매예정

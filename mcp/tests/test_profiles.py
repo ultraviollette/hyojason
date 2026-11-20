@@ -402,7 +402,7 @@ def test_old_single_place_reads_as_list() -> None:
 
 
 def test_coupang_in_places_puts_coupang_first_rule_in_tool_replies() -> None:
-    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["쿠팡", "네이버"], payment_by="self")
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["쿠팡"], payment_by="self")
     assert r["place_rules"] == [server.COUPANG_FIRST_NOTE]
     assert "쿠팡은 제가 직접 볼 수 없어서 검색어를 드려요" in server.COUPANG_FIRST_NOTE
     assert "맨 앞" in server.COUPANG_FIRST_NOTE
@@ -412,8 +412,24 @@ def test_coupang_in_places_puts_coupang_first_rule_in_tool_replies() -> None:
     assert "place_rules" not in server.record_item(r["client_id"], "chosen", "플라워 텀블러")
 
 
-def test_no_coupang_no_place_rules() -> None:
-    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["네이버"])
+def test_no_known_place_no_place_rules() -> None:
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["11번가"])
     assert "place_rules" not in r and "place_rules" not in server.resolve_client("kakao", KAKAO_ID)
     assert "place_rules" not in server.record_item(r["client_id"], "found", "텀블러")
     assert profiles.has_coupang({"payment": {"places": ["Coupang"]}}) is True
+
+
+def test_naver_in_places_puts_naver_first_rule() -> None:
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["네이버"])
+    assert r["place_rules"] == [server.NAVER_FIRST_NOTE]
+    assert "smartstore.naver.com" in server.NAVER_FIRST_NOTE and "brand.naver.com" in server.NAVER_FIRST_NOTE
+    assert "앞에 둔다" in server.NAVER_FIRST_NOTE
+    assert server.resolve_client("kakao", KAKAO_ID)["place_rules"] == [server.NAVER_FIRST_NOTE]
+    assert server.record_item(r["client_id"], "found", "텀블러")["place_rules"] == [server.NAVER_FIRST_NOTE]
+    for name in ("Naver", "스마트스토어", "네이버쇼핑"):
+        assert profiles.has_naver({"payment": {"places": [name]}}) is True, name
+
+
+def test_coupang_and_naver_both_rules_coupang_first() -> None:
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_places=["쿠팡", "네이버"])
+    assert r["place_rules"] == [server.COUPANG_FIRST_NOTE, server.NAVER_FIRST_NOTE]   # 쿠팡 줄이 답 맨 앞
