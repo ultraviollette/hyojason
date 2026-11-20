@@ -1,4 +1,4 @@
-# 효자손 인수인계 (2026-11-20 기준)
+# 효자손 인수인계 (2026-11-20 기준, c79139a 반영)
 
 이어서 작업할 사람(또는 에이전트)을 위한 메모다. 구조 설명은 [architecture.md](architecture.md)에 있고, 여기에는 11/19~20 실사용 시험을 반영하며 바뀐 것만 적는다.
 실제 프로필 내용·시크릿·사용자 ID 는 이 문서에 적지 않는다.
@@ -18,6 +18,8 @@
 | 9b34eb9 | 주로 사는 곳에 네이버가 있으면 스마트스토어·브랜드스토어 상품 페이지를 앞에(`place_rules`), 네이버 쇼핑 검색 API 경로에 "2026-07-31 종료" 주석 |
 | f807d13 | (site) 소개 페이지 쿠팡 파트너스 링크 교체(엠보엘로우 텀블러) |
 | e9a41eb | (site) 같은 링크의 상품 표시 이름 변경(엠보엘로우 → 가든화이트) |
+| f3f5b0c | 이 인수인계 문서 |
+| c79139a | f3f5b0c 시험 반영: 후보 페이지 확인(`check_candidates`), 기록의 `match`(같은 물건/비슷한 것), 해요체·내부 용어·군말 금지(`confirm_note`), SKILL description |
 
 ## 2. 새로 생긴 구조
 
@@ -104,6 +106,7 @@ callback `outcome` 값:
 | `seller` | 판매처 이름 |
 | `seen_price_krw` | 그때 본 실제 판매가(정가 아님). 모르면 null |
 | `url` | 선택. 답에 드린 상품 페이지 주소. 옛 기록은 `""` 로 읽힘. 크라우드펀딩(wadiz.kr·tumblbug.com) 주소면 기록 자체를 거절 |
+| `match` | `same`(찾던 그 물건) \| `similar`(비슷한 것·닮은 제품으로 드림) \| `""`(모름, 옛 기록). found 를 같은 물건으로 합칠 때 빈 값은 옛 값을 지킴 |
 
 - 최근 50건까지 보관한다. 넘으면 오래된 found 부터 지우고, chosen 은 끝까지 남긴다.
 - 같은 날·같은 브랜드·이름·옵션이면 한 줄로 합친다. found 를 chosen 으로 남기면 그 줄이 chosen 으로 바뀐다. 빈 값은 옛 값을 지킨다.
@@ -125,13 +128,26 @@ callback `outcome` 값:
 |---|---|---|
 | `ask_payment` / `ask_payment_note` | `record_item` | 결제 방식을 모르고 물은 적도 없을 때 found 첫 기록에서 한 번만. 노트는 "후보와 링크를 다 쓰고 맨 끝에 결제 질문 한 줄" |
 | `place_rules` | `resolve_client`, `get_client_profile`, `save_client_profile`, `record_item(found)` | `places` 에 쿠팡이 있으면 `COUPANG_FIRST_NOTE`(쿠팡 검색어 줄을 답 맨 앞에). 네이버가 있으면 `NAVER_FIRST_NOTE`(웹 검색 후보 중 smartstore.naver.com·brand.naver.com 상품 페이지를 앞에). 둘 다면 쿠팡이 먼저. 해당 없으면 칸 자체가 없음 |
-| `items[].confirm_phrase` | 프로필 보기(파일에는 저장 안 함) | chosen → "지난번 ○○ 맞으세요?", found → "지난번에 찾아 드렸던 ○○ 말씀이세요?" |
+| `items[].confirm_phrase` | 프로필 보기(파일에는 저장 안 함) | chosen → "지난번 ○○ 맞으세요?" / found+same → "지난번에 찾아 드렸던 ○○ 말씀이세요?" / found+similar → "지난번에 비슷한 걸로 ○○ 등 N개 찾아 드렸어요. 그중에서 고르실래요, 다시 찾아볼까요?" / found+""(옛 기록) → 같은 문장에서 "비슷한 걸로"만 뺌. N 은 같은 날·같은 match 의 found 묶음, ○○ 는 묶음에서 먼저 기록된 것. 1개면 "그걸로 보실래요, 다시 찾아볼까요?" |
+| `confirm_note` | 프로필에 items 가 있을 때 `resolve_client` 등 `place_rules` 와 같은 응답 | 확인 질문은 confirm_phrase 로 바로 시작, 사진 설명·기록 이야기 금지, 내부 용어 금지, 해요체만 |
+| `check_candidates` 의 `results[].show`·`say`, `note` | `check_candidates` | 아래 2-4 |
 
 - `save_client_profile` 이 `saved=false` 를 주면 "기억해 둘게요"라고 말하지 않게 했다(도구 설명과 SOUL·SKILL).
 - 네이버 쇼핑 검색 API 는 2026-07-31 에 종료됐다. 경로는 지우지 않고 주석만 달았다.
   - `mcp/shopping_tools/naver.py` 모듈 설명과 `NAVER_URL`
   - `mcp/shopping_tools/server.py` 의 `_naver_provider` 와 `SEARCH_PROVIDERS` 의 naver 줄
 - `make_search_links` 의 네이버쇼핑 검색 링크(m.search.naver.com)는 이 API 가 아니다.
+
+### 2-4. 후보 페이지 확인 (`check_candidates`, `mcp/shopping_tools/server.py`)
+- 웹 검색 후보(3-b·1-c)를 답에 내기 전에 한 번 부른다. `candidates=[{url, title, mall}]`, 최대 `MAX_CHECK=3`.
+- 후보마다 상품 페이지를 GET 한 번 읽는다(`_check_one`, `check_product` 와 같은 판정). 동시에 읽고, 한 후보에 `CHECK_BUDGET_S=15`초를 넘기면 `unverified`("시간 안에 못 읽음")로 둔다.
+- 쿠팡(`coupang.com`)·크라우드펀딩 주소에는 요청하지 않는다(`drop_not_candidate`). 다시 시도·링크 따라가기·주기적 확인은 없다.
+- `verdict`: `ok` / `unverified`(못 읽음·재고 근거 없음, 내되 밝힘) / `overseas`(해외직구·해외배송·구매대행) / `drop_sold_out` / `drop_profile` / `drop_deadline` / `drop_not_candidate` / `drop_bad_url`.
+- `show`: ok·unverified 는 true. overseas 는 ok·unverified 가 하나도 없을 때만 true.
+- `say`(후보 줄 아래에 글자 그대로): "해외배송 · 외국에서 오는 거라 2주쯤 걸려요", "아동용 상품이에요", "재고와 배송비는 확인하지 못했어요" / "재고는 확인하지 못했어요" / "배송비는 확인하지 못했어요", "배송비 N원 따로"(값과 "무료배송" 문구가 같이 있으면 "(조건에 따라 무료일 수 있어요)"), "무료배송".
+- 배송비(`_shipping_fee`): "배송비 X" 값이 하나로 정해질 때만. 여러 값(지역·옵션별)이면 모름.
+- `check_product` 는 1-b(사용자가 보낸 링크)용으로 남겼다. 반환에 `shipping_fee_krw`·`verdict`·`say` 가 더해졌다. `passed` 의 뜻은 그대로다.
+- `gates._OVERSEAS` 에 "구매대행"이 더해졌다.
 
 ## 3. 이번에 바뀐 프롬프트 규칙의 위치
 
@@ -152,6 +168,15 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 | 후보를 드리는 답에서 할 일 | url 기록, 가격(판매가 / 확신 없으면 단정 금지), `payment_places`, `saved=false`, `place_rules`(쿠팡·네이버), 답 맨 앞 줄 |
 | 링크 표기 규칙 | 링크만 있는 답 금지(물건마다 제품·옵션·가격 줄 + "재고·도착일은 링크에서 확인하세요") |
 | 대화 규칙 | 찾기 전 군말("알겠어요. 사진 속 ○○ 찾아볼게요.") 금지, 도구를 부르기 전에 글을 쓰지 않기 |
+| (c79139a) description | 웹 검색 + 페이지 확인 흐름으로 |
+| (c79139a) 1. 요청 해석 | confirm_phrase 세 가지, 확인 질문은 그 문장으로 시작, 비슷한 것 묶음에서 고르기/다시 찾기 |
+| (c79139a) 1-a | 비슷한 것·닮은 제품은 `match="similar"` |
+| (c79139a) 1-c 4·5·7 | 낼 상품 페이지를 `check_candidates` 로 확인, say 줄 + "도착일은 링크에서 확인하세요" |
+| (c79139a) 3-b 5·6 | 검증 생략 → `check_candidates` 로 확인, say 줄을 후보 줄 아래에 |
+| (c79139a) 후보 페이지 확인 (새 섹션) | `check_candidates` 사용법(show·say·overseas·unverified·buy_url) |
+| (c79139a) 4. 검증 | 사용자가 보낸 링크(1-b)용으로 이름을 좁힘 |
+| (c79139a) 후보를 드리는 답에서 할 일 | record_item 의 `match` 필수, 배송비 say 를 가격 아래에 |
+| (c79139a) 대화 규칙 | 군말을 "확인 질문 앞 설명"까지, 해요체만, 내부 용어 금지 |
 
 **SOUL.md** (`hermes/SOUL.md`)
 
@@ -162,12 +187,16 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 | 대화 규칙 | 질문 묶음 한 번, 사진 확인 ①②③(③ 예시는 색) |
 | 말투 | 결제 질문 자리, 군말 금지, 크기 비교 질문, 버튼 답에는 제품·옵션·가격 줄, 도착일은 확인한 경우에만 |
 | 클라이언트 프로필 | `confirm_phrase`, 확인받은 기록의 url 먼저, `payment_places`, `saved=false`, `place_rules`(쿠팡·네이버) |
+| (c79139a) 네가 하는 일 3 | 후보 페이지를 check_candidates 로 확인 |
+| (c79139a) 절대 규칙 | 해외배송 줄에 check_candidates show·say, 배송비, 못 읽은 후보 문장 |
+| (c79139a) 말투 | 해요체만, 군말 범위 넓힘, 내부 용어 금지 |
+| (c79139a) 클라이언트 프로필 | confirm_phrase 세 가지·첫 글자부터, record_item 의 match |
 
 ## 4. 테스트
 
 ```bash
 cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 44 passed
-cd mcp && uv run python -m pytest -q                            # MCP: 56 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 68 passed
 ```
 - 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
 - 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
@@ -192,6 +221,11 @@ cd mcp && uv run python -m pytest -q                            # MCP: 56 passed
 - 카카오 콜백(`callbackUrl`)은 메시지마다 1회, 최대 5분 유효하다.
 
 ## 7. 아직 정해지지 않은 것
+- (c79139a) 후보 확인의 시간·정확도: 지금 값은 `MAX_CHECK=3`, `CHECK_BUDGET_S=15`(제안값). 사용자가 정하기로 했다. 배포 전에 확정한다.
+- (c79139a) 쇼핑몰별로 페이지를 실제로 읽을 수 있는지(롯데온·LF몰 등)는 확인하지 않았다(작업자는 쇼핑몰에 요청하지 않는다). 실사용 로그로 본다. 확인 필요.
+- (c79139a) "해외직구"·"품절"이 상품이 아니라 메뉴·추천 영역 글자에 있으면 잘못 걸릴 수 있다(본문 앞 6,000자를 통째로 본다). 확인 필요.
+- (c79139a) 비슷한 것 묶음은 날짜로만 묶는다. 같은 날 다른 물건을 비슷한 것으로 또 찾아 드리면 한 묶음이 된다.
+- (c79139a) 네이버 우선(`NAVER_FIRST_NOTE`)이 걸렸는지 관찰할 방법. 제안만 했고 넣지 않았다(c79139a 보고 4번).
 - SOUL.md "절대 규칙"의 쇼핑과 무관한 입력 줄에 있는 "그건 자녀분께 직접 물어보시는 게 좋겠어요" 표현. 지금 파일에서는 38행이다.
   - SKILL 3-b 쪽은 5f4fc69 에서 "가족이나 주변 분께"로 바뀌었다.
 - 배송비를 기록(items)에 남길지.
