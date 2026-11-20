@@ -30,7 +30,7 @@ preferences:
   price_sensitivity: medium    # low | medium | high
 
 shopping_rules:
-  default_deadline_days: null  # 기한을 말하지 않으면 묻는다 (null) / 숫자면 기본값
+  default_deadline_days: null  # null: 사용자가 급하다는 말이나 날짜를 꺼냈을 때만 기한을 다룬다(묻지 않음) / 숫자면 기본값
   allow_overseas_when_no_deadline: true
   max_candidates: 3
 

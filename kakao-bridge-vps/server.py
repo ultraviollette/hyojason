@@ -23,10 +23,12 @@ import logging
 import os
 import re
 import time
+import string
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -64,6 +66,8 @@ class Settings:
     wait_first_photo_s: float = 4.0
     wait_more_s: float = 4.0
     wait_max_s: float = 10.0
+    # 이 파일이 있으면 사진 메시지 utterance 의 "형태"만 로그에 남긴다(기본 꺼짐). 내용·주소·ID 는 남기지 않는다.
+    utterance_shape_flag: str = "~/.config/hyojason/debug-utterance-shape"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | os._Environ = os.environ) -> "Settings":
@@ -394,6 +398,39 @@ class Conversations:
         return conv
 
 
+# ---------- 사진 메시지 utterance 형태 로그 (디버그, 기본 꺼짐) ----------
+# 카카오 문서에 일반 사진을 보냈을 때 utterance 에 무엇이 오는지 적혀 있지 않다(실사용 로그: 사진 메시지 text_len=195).
+# 형식을 추측해 지우지 않고, 형태만 보고 판단하려고 둔다. 표시 파일이 있을 때만, 사진이 있는 메시지만 남긴다.
+_SHAPE_MAX = 200
+_ASCII_PUNCT = set(string.punctuation)
+
+
+def utterance_shape(text: str) -> str:
+    """글자를 지우고 모양만 남긴다: 한글→가, 영문→a, 다른 글자→x, 숫자→9, 공백→_, ASCII 기호는 그대로."""
+    out = []
+    for ch in text[:_SHAPE_MAX]:
+        if "가" <= ch <= "힣" or "ㄱ" <= ch <= "ㅣ":
+            out.append("가")
+        elif ch.isascii() and ch.isalpha():
+            out.append("a")
+        elif ch.isdigit():
+            out.append("9")
+        elif ch.isspace():
+            out.append("_")
+        elif ch in _ASCII_PUNCT:
+            out.append(ch)
+        else:
+            out.append("x")
+    return "".join(out)
+
+
+def utterance_shape_line(seq: int, text: str, images: list[str]) -> str:
+    return ("path=utterance_shape seq=%d len=%d starts_url=%d has_param_image=%d json=%d shape=%s"
+            % (seq, len(text), 1 if re.match(r"\s*https?://", text, re.I) else 0,
+               1 if any(u and u in text for u in images) else 0,
+               1 if text.lstrip().startswith(("{", "[")) else 0, utterance_shape(text)))
+
+
 # ---------- 메시지 합치기 ----------
 # 실사용 로그: 사진 뒤의 글은 11~31초 뒤에 와서, 늘 사진 턴(약 53초)을 처리하는 도중에 도착했다.
 # 메시지마다 따로 답하니 봇의 답이 한 박자 전 메시지에 대한 답이 되어 "한 칸씩 밀려" 보였다.
@@ -610,7 +647,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
             body = {}
 
         ur = body.get("userRequest") if isinstance(body.get("userRequest"), dict) else {}
-        text = neutralize_user_text(str(ur.get("utterance") or "").strip())
+        raw_text = str(ur.get("utterance") or "").strip()
+        text = neutralize_user_text(raw_text)
         images = extract_image_urls(body)
         user = ur.get("user") if isinstance(ur.get("user"), dict) else {}
         user_id = str(user.get("id") or "unknown")
@@ -645,6 +683,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
         q.pending.append(m)
         log.info("path=arrive seq=%d image=%d text_len=%d merged=%d%s", m.seq, 1 if images else 0, len(text),
                  merged, ",new_conversation" if new_conv else "")
+        if images and Path(s.utterance_shape_flag).expanduser().exists():
+            log.info(utterance_shape_line(m.seq, raw_text, images))
         schedule(user_id)
         return JSONResponse({"version": "2.0", "useCallback": True, "data": {"text": QUICK_ACK}})
 

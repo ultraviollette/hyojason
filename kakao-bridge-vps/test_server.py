@@ -676,3 +676,56 @@ def test_payment_question_without_links_is_sent_but_flagged_in_log(caplog) -> No
         _run(h, steps)
     assert h.said("/cb/mom/1") == pay_only                                # 답은 바꾸지 않는다
     assert any("payment_q_no_links" in r.getMessage() for r in caplog.records)
+
+
+# ---------- 사진 메시지 utterance 형태 로그 (기본 꺼짐) ----------
+from server import utterance_shape  # noqa: E402
+
+SECRET_UTTERANCE = "https://talk.kakaocdn.net/dn/Ab9/SecretToken123.jpg?sig=Zz 사진 보냄 😀"
+
+
+def _shape_run(caplog, flag_path: str, msg: dict) -> list[str]:
+    import logging
+    h = _Hermes(["알겠어요."])
+
+    async def steps(bridge, app):
+        await bridge.post("/kakao/skill", json=msg)
+
+    with caplog.at_level(logging.INFO, logger="hyojason.bridge"):
+        _run(h, steps, utterance_shape_flag=flag_path)
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("path=utterance_shape")]
+
+
+def _photo_with_text(uid: str, said: str) -> dict:
+    m = _photo(uid, 1)
+    m["userRequest"]["utterance"] = said
+    return m
+
+
+def test_shape_log_is_off_by_default(caplog, tmp_path) -> None:
+    assert _shape_run(caplog, str(tmp_path / "no-such-flag"), _photo_with_text("USERSECRET", SECRET_UTTERANCE)) == []
+
+
+def test_shape_log_keeps_only_the_shape(caplog, tmp_path) -> None:
+    flag = tmp_path / "debug-utterance-shape"
+    flag.touch()
+    msg = _photo_with_text("USERSECRET", SECRET_UTTERANCE)
+    msg["userRequest"]["params"]["media"]["url"] = "https://talk.kakaocdn.net/dn/Ab9/SecretToken123.jpg?sig=Zz"
+    lines = _shape_run(caplog, str(flag), msg)
+    assert len(lines) == 1
+    line = lines[0]
+    assert "starts_url=1" in line and "has_param_image=1" in line and "json=0" in line
+    assert f"len={len(SECRET_UTTERANCE)}" in line
+    assert line.endswith("shape=aaaaa://aaaa.aaaaaaaa.aaa/aa/aa9/aaaaaaaaaaa999.aaa?aaa=aa_가가_가가_x")
+    for leaked in ("kakaocdn", "SecretToken", "123", "Zz", "사진", "USERSECRET", "😀"):
+        assert leaked not in caplog.text, leaked        # 실제 글자·주소·ID 는 로그에 없다
+
+
+def test_shape_log_only_for_photo_messages(caplog, tmp_path) -> None:
+    flag = tmp_path / "debug-utterance-shape"
+    flag.touch()
+    assert _shape_run(caplog, str(flag), _text("USERSECRET", "네이비로 찾아줘", 1)) == []
+
+
+def test_utterance_shape_json_like() -> None:
+    assert utterance_shape('{"secureUrls":"List(http://x)"}') == '{"aaaaaaaaaa":"aaaa(aaaa://a)"}'
