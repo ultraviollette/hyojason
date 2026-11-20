@@ -132,7 +132,7 @@ def test_sold_out_is_dropped_and_overseas_hidden_when_domestic_exists(monkeypatc
     assert r["a.test"]["verdict"] == "drop_sold_out" and r["a.test"]["show"] is False
     assert r["b.test"]["verdict"] == "overseas" and r["b.test"]["show"] is False   # 국내 후보가 있으면 빼기
     assert r["c.test"]["verdict"] == "ok" and r["c.test"]["show"] is True
-    assert r["c.test"]["say"] == ["배송비 3,000원 따로"] and r["c.test"]["shipping_fee_krw"] == 3000
+    assert r["c.test"]["say"] == "배송비 3,000원 따로" and r["c.test"]["shipping_fee_krw"] == 3000
 
 
 def test_overseas_only_candidate_is_shown_with_label_and_fee(monkeypatch):
@@ -140,8 +140,7 @@ def test_overseas_only_candidate_is_shown_with_label_and_fee(monkeypatch):
     out = _run(_cands("a.test", "b.test"))
     b = out["results"][1]
     assert b["show"] is True and b["verdict"] == "overseas"
-    assert b["say"][0] == server.OVERSEAS_SAY and b["say"][0].startswith("해외배송")
-    assert "배송비 5,500원 따로" in b["say"]
+    assert b["say"] == f"{server.OVERSEAS_SAY} · 배송비 5,500원 따로"
 
 
 def test_proxy_purchase_alone_counts_as_overseas(monkeypatch):
@@ -160,8 +159,8 @@ def test_unreadable_candidate_is_kept_and_says_unverified(monkeypatch):
     _pages(monkeypatch, {"a.test": (429, SMARTSTORE_429), "c.test": (200, FREE)})
     r = _run(_cands("a.test", "c.test"))["results"]
     assert r[0]["show"] is True and r[0]["verdict"] == "unverified"
-    assert r[0]["say"] == ["재고와 배송비는 확인하지 못했어요"]
-    assert r[1]["say"] == ["무료배송"] and r[1]["shipping_fee_krw"] == 0
+    assert r[0]["say"] == "재고와 배송비는 확인하지 못했어요"
+    assert r[1]["say"] == "무료배송" and r[1]["shipping_fee_krw"] == 0
 
 
 def test_conditional_free_shipping_and_multiple_fees(monkeypatch):
@@ -169,8 +168,8 @@ def test_conditional_free_shipping_and_multiple_fees(monkeypatch):
         "a.test": (200, f"<body>핸드크림 {FILLER} 배송비 3,000원 5만원 이상 무료배송 구매하기</body>"),
         "b.test": (200, f"<body>핸드크림 {FILLER} 배송비 3,000원 제주 배송비 6,000원 구매하기</body>")})
     a, b = _run(_cands("a.test", "b.test"))["results"]
-    assert a["say"] == ["배송비 3,000원 따로 (조건에 따라 무료일 수 있어요)"]
-    assert b["shipping_fee_krw"] is None and b["say"] == ["배송비는 확인하지 못했어요"]
+    assert a["say"] == "배송비 3,000원 따로 (조건에 따라 무료일 수 있어요)"
+    assert b["shipping_fee_krw"] is None and b["say"] == "배송비는 확인하지 못했어요"
 
 
 def test_coupang_and_crowdfunding_are_not_requested_and_max_three(monkeypatch):
@@ -223,3 +222,32 @@ def test_log_line_has_counts_only(monkeypatch, tmp_path):
     lines.clear()
     _run(cands)
     assert "naver_rule=na" in lines[0]                                    # client_id 를 안 주면 모름
+
+
+# 8316893 실사용: "배송비 5,500원 따로" 바로 아래에 "재고와 배송비는 확인하지 못했어요"가 붙었다.
+def test_fee_seen_in_search_and_unread_page_say_one_consistent_line(monkeypatch):
+    _pages(monkeypatch, {"a.test": (429, SMARTSTORE_429)})
+    c = _cands("a.test")
+    c[0]["shipping_fee_krw"] = 5500                       # 에이전트가 숫자로 넘겨도 받는다
+    r = _run(c)["results"][0]
+    assert r["say"] == "배송비 5,500원 따로 · 재고는 확인하지 못했어요"
+    assert "배송비는 확인하지 못했" not in r["say"] and "재고와 배송비" not in r["say"]
+    assert r["shipping_fee_krw"] == 5500 and r["verdict"] == "unverified"
+
+
+def test_fee_on_page_wins_over_search_and_timeout_keeps_seen_fee(monkeypatch):
+    _pages(monkeypatch, {"c.test": (200, DOMESTIC)})
+    c = _cands("c.test")
+    c[0]["shipping_fee_krw"] = "2,500원"
+    assert _run(c)["results"][0]["say"] == "배송비 3,000원 따로"     # 페이지에서 읽은 값이 먼저
+
+    async def slow(url, *a, **kw):
+        await asyncio.sleep(1)
+    monkeypatch.setattr(server, "_fetch_page", slow)
+    monkeypatch.setattr(server, "CHECK_BUDGET_S", 0.05)
+    r = _run(c)["results"][0]
+    assert r["say"] == "배송비 2,500원 따로 · 재고는 확인하지 못했어요"
+
+
+def test_budget_is_8_seconds():
+    assert server.CHECK_BUDGET_S == 8

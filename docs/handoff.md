@@ -19,6 +19,9 @@
 | f807d13 | (site) 소개 페이지 쿠팡 파트너스 링크 교체(엠보엘로우 텀블러) |
 | e9a41eb | (site) 같은 링크의 상품 표시 이름 변경(엠보엘로우 → 가든화이트) |
 | f3f5b0c | 이 인수인계 문서 |
+| 8316893 | 확인 2번 상한(`attempt`), `drop_reason`, 개수 로그 |
+| 7b50a5e | 작업 규칙에 push |
+| (이번 커밋) | 페이지 읽기 상한 15 → 8초, `say` 를 한 줄로(읽은 것·못 읽은 것 따로), 검색 결과 배송비를 `candidates[].shipping_fee_krw` 로 받기 |
 | c79139a | f3f5b0c 시험 반영: 후보 페이지 확인(`check_candidates`), 기록의 `match`(같은 물건/비슷한 것), 해요체·내부 용어·군말 금지(`confirm_note`), SKILL description |
 
 ## 2. 새로 생긴 구조
@@ -147,11 +150,11 @@ callback `outcome` 값:
   - naver_rule: 프로필 places 에 네이버가 있으면 1, 없으면 0, client_id 가 없거나 프로필이 없으면 na.
   - 읽는 법: naver_rule=1 이고 naver_hosts=0 이면 낸 후보에 네이버가 없었다. 검색 결과에 아예 없었는지는 이 줄로 알 수 없다(Hermes 세션 기록의 web_search 결과로 본다).
   - stdio MCP 의 stderr 가 어디에 남는지(Hermes 로그 등)는 확인 필요.
-- 후보마다 상품 페이지를 GET 한 번 읽는다(`_check_one`, `check_product` 와 같은 판정). 동시에 읽고, 한 후보에 `CHECK_BUDGET_S=15`초를 넘기면 `unverified`("시간 안에 못 읽음")로 둔다.
+- 후보마다 상품 페이지를 GET 한 번 읽는다(`_check_one`, `check_product` 와 같은 판정). 동시에 읽고, 한 후보에 `CHECK_BUDGET_S=8`초를 넘기면 `unverified`("시간 안에 못 읽음")로 둔다.
 - 쿠팡(`coupang.com`)·크라우드펀딩 주소에는 요청하지 않는다(`drop_not_candidate`). 다시 시도·링크 따라가기·주기적 확인은 없다.
 - `verdict`: `ok` / `unverified`(못 읽음·재고 근거 없음, 내되 밝힘) / `overseas`(해외직구·해외배송·구매대행) / `drop_sold_out` / `drop_profile` / `drop_deadline` / `drop_not_candidate` / `drop_bad_url`.
 - `show`: ok·unverified 는 true. overseas 는 ok·unverified 가 하나도 없을 때만 true.
-- `say`(후보 줄 아래에 글자 그대로): "해외배송 · 외국에서 오는 거라 2주쯤 걸려요", "아동용 상품이에요", "재고와 배송비는 확인하지 못했어요" / "재고는 확인하지 못했어요" / "배송비는 확인하지 못했어요", "배송비 N원 따로"(값과 "무료배송" 문구가 같이 있으면 "(조건에 따라 무료일 수 있어요)"), "무료배송".
+- `say` 는 한 줄 글자다(조각을 " · " 로 잇는다). 배송비를 알면(페이지 → 없으면 `candidates[].shipping_fee_krw`, 검색 결과에서 본 값) "배송비는 확인하지 못했어요"를 넣지 않고 "배송비 5,500원 따로 · 재고는 확인하지 못했어요"처럼 따로 말한다. 조각: "해외배송 · 외국에서 오는 거라 2주쯤 걸려요", "아동용 상품이에요", "재고와 배송비는 확인하지 못했어요" / "재고는 확인하지 못했어요" / "배송비는 확인하지 못했어요", "배송비 N원 따로"(값과 "무료배송" 문구가 같이 있으면 "(조건에 따라 무료일 수 있어요)"), "무료배송".
 - 배송비(`_shipping_fee`): "배송비 X" 값이 하나로 정해질 때만. 여러 값(지역·옵션별)이면 모름.
 - `check_product` 는 1-b(사용자가 보낸 링크)용으로 남겼다. 반환에 `shipping_fee_krw`·`verdict`·`say` 가 더해졌다. `passed` 의 뜻은 그대로다.
 - `gates._OVERSEAS` 에 "구매대행"이 더해졌다.
@@ -229,10 +232,13 @@ cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
 - 카카오 콜백(`callbackUrl`)은 메시지마다 1회, 최대 5분 유효하다.
 
 ## 7. 아직 정해지지 않은 것
-- 후보 확인의 시간·정확도: `MAX_CHECK=3`, `CHECK_BUDGET_S=15` 로 두고 실사용으로 재 본 뒤 사용자가 정한다.
+- 후보 검증을 계속 둘지 끌지. 8316893 실사용: "록시땅 버베나 핸드크림" 한 건이 브릿지 기준 163초(전 약 120초)였는데, 얻은 것이 없었다(롯데온 품절은 "확인하지 못했어요", LF몰 해외직구·구매대행은 못 잡음). 상한을 8초로 줄인 뒤 다시 잰다.
+- 5개 읽고 3개 내기(빠지는 후보를 메울 여유 vs 쇼핑몰 요청 증가). 지금은 `MAX_CHECK=3`.
+- 네이버 후보 고르기를 코드로 옮기기(웹 검색 상품 주소를 최대 10개 넘기고 코드가 smartstore·brand.naver 를 앞에 두어 고름, `seen=… naver_seen=…` 로그).
+- check_candidates 개수 로그가 어디에 남는지(아래 9). 파일 로그를 둘지.
+- LF몰 해외직구·구매대행을 못 잡은 원인(아래 9). 확인 필요.
 - (c79139a) 쇼핑몰별로 페이지를 실제로 읽을 수 있는지(롯데온·LF몰 등)는 확인하지 않았다(작업자는 쇼핑몰에 요청하지 않는다). 실사용 로그로 본다. 확인 필요.
 - (c79139a) "해외직구"·"품절"이 상품이 아니라 메뉴·추천 영역 글자에 있으면 잘못 걸릴 수 있다(본문 앞 6,000자를 통째로 본다). 확인 필요.
-- 네이버 우선을 완전히 구분하는 방법(웹 검색 상품 주소를 최대 10개 넘기고 코드가 네이버를 앞에 두어 3개를 고르며 `seen=… naver_seen=…` 로그): 지금은 하지 않기로 했다.
 
 ## 8. 정해진 것 (2026-11-20)
 - 비슷한 것 묶음은 날짜로만 나눈다. 같은 날 다른 물건을 비슷한 것으로 또 찾아 드리면 한 묶음이 된다.
@@ -244,3 +250,30 @@ cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
 - 배송비를 기록(items)에 남길지.
 - 찾기 전 군말이 계속 나오면, Hermes 응답의 글 덩어리 개수를 로그로 남길지. 개수만 남기고 내용은 남기지 않는다.
   - 도구를 부르기 전에 쓴 글이 최종 답에 합쳐 오는지 확인하려는 것이다. 지금은 넣지 않기로 했다.
+
+## 9. 8316893 시험에서 본 것 (원인 후보, 확인 필요)
+
+**LF몰에서 배송비는 나왔는데 해외직구·구매대행을 못 잡은 이유 (코드상 가능한 것)**
+1. 그 배송비는 페이지에서 읽은 것이 아닐 가능성이 크다. 8316893 코드에서 "재고와 배송비는 확인하지 못했어요"는 페이지 배송비가 없을 때(`fee is None`)만 나온다. 따라서 "배송비 5,500원 따로"는 에이전트가 검색 결과를 보고 따로 쓴 줄이고, 페이지는 못 읽었을(차단·JS 렌더링·15초 초과) 가능성이 크다.
+2. 페이지를 못 읽으면 해외 판정 근거는 에이전트가 넘긴 title·mall 뿐이다. 거기에 "해외직구"가 없으면 규칙 판정(`gates._rule_decide`)은 `domestic_shipping` 을 "yes"로 둔다(모를 때도 "unknown"이 아니라 "yes").
+3. 읽었더라도: 본문은 앞 6,000자만 본다(`_fetch_page` limit). 표시가 그 뒤에 있으면 못 본다. Jev 엔진이면 앞 4,000자만 넘긴다.
+4. 읽었더라도: "해외직구"가 이미지 배지(글자 없음)나 JS 로 그려지는 영역에 있으면 정적 HTML 텍스트에 없다.
+5. check_candidates 가 아예 불리지 않았을 수도 있다. 개수 로그 줄이 없었고, "재고와 배송비는 확인하지 못했어요"는 SKILL 에도 적힌 문장이라 에이전트가 직접 썼을 수 있다. 롯데온(품절 페이지)이 "확인하지 못했어요"로 나온 것도 같은 두 가능성(못 읽음 / 안 부름)이다.
+
+**개수 로그가 어디로 가는지**
+- 로그는 MCP 서버(`shopping_tools.server`)의 stderr 로 나간다. 이 서버는 Hermes 가 stdio 자식 프로세스로 띄우므로, stderr 가 journal 로 가는지·Hermes 가 따로 받는지·버려지는지는 Hermes 쪽 처리에 달렸다. 확인 필요.
+- VPS 에서 볼 명령(사용자가 실행):
+  ```bash
+  pgrep -af shopping_tools.server                 # MCP 서버가 떠 있는지, PID
+  ps -o pid,lstart,cmd -p <PID>                   # 시작 시각: git pull 뒤에 다시 떴는지(안 떴으면 옛 코드라 check_candidates 가 없다)
+  ls -l /proc/<PID>/fd/2                          # stderr 가 어디로 가는지(journal 소켓 / 파일 / /dev/null / pipe)
+  grep -n "def check_candidates" <REPO>/mcp/shopping_tools/server.py   # VPS 코드에 도구가 있는지
+  journalctl --user -u hermes-gateway --since today | grep -c "path=check_candidates"
+  grep -rn "path=check_candidates" ~/.hermes/logs 2>/dev/null | tail -5   # Hermes 가 MCP stderr 를 자기 로그에 남기는 경우
+  ```
+  - fd/2 가 pipe 면 Hermes 가 받는 것이다. 그때는 Hermes 로그 위치를 사용자가 확인한다.
+- 위로도 안 보이면 파일 로그 안(제안, 넣지 않음):
+  - 경로: `~/.local/state/hyojason/check_candidates.log`(환경변수 `HYOJASON_LOG_DIR` 로 바꿀 수 있게). `~/.hermes` 밖.
+  - 내용: 지금 줄 앞에 한국 시각만 붙인다. `2026-11-20T15:04:05+09:00 path=check_candidates attempt=1 n=3 naver_rule=1 naver_hosts=0 shown=2 ok=0 unreadable=2 …` 주소·사용자 ID·상품명은 없다.
+  - 크기: `RotatingFileHandler` 1MB × 3개(최대 약 4MB). 한 줄 약 150바이트라 1MB 에 약 7천 건.
+

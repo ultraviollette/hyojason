@@ -309,7 +309,8 @@ def _shipping_fee(text: str) -> tuple[int | None, bool]:
     return None, False
 
 
-async def _check_one(product_url: str, title: str, mall: str, dl, forbidden: list[str]) -> dict[str, Any]:
+async def _check_one(product_url: str, title: str, mall: str, dl, forbidden: list[str],
+                     seen_fee: int | None = None) -> dict[str, Any]:
     """상품 페이지 하나를 한 번 읽고(GET 1번, 다시 시도·다른 페이지 따라가기 없음) 판정한다."""
     page = await _fetch_page(product_url)
     page_text = page.text
@@ -329,6 +330,8 @@ async def _check_one(product_url: str, title: str, mall: str, dl, forbidden: lis
 
     kids = _KIDS.search(f"{title} {page.page_title}")
     fee, fee_conditional = _shipping_fee(page_text)
+    if fee is None and seen_fee is not None:   # 페이지에서 못 읽었으면 검색 결과에서 본 배송비를 쓴다
+        fee = seen_fee
 
     notes = []
     if kids:
@@ -372,37 +375,48 @@ OVERSEAS_SAY = "해외배송 · 외국에서 오는 거라 2주쯤 걸려요"
 UNVERIFIED_SAY = "재고와 배송비는 확인하지 못했어요"
 
 
+def _fee_text(fee: int, conditional: bool) -> str:
+    if fee == 0:
+        return "무료배송"
+    return f"배송비 {fee:,}원 따로" + (" (조건에 따라 무료일 수 있어요)" if conditional else "")
+
+
+def _say_line(*, overseas: bool, kids: bool, stock_unknown: bool, fee: int | None, fee_conditional: bool) -> str:
+    """후보 줄 아래에 붙일 한 줄. 읽은 것과 못 읽은 것을 따로 말한다.
+    8316893 실사용: "배송비 5,500원 따로" 바로 아래에 "재고와 배송비는 확인하지 못했어요"가 붙어 서로 어긋났다.
+    배송비를 알면(페이지 또는 검색 결과) 배송비를 확인하지 못했다고 말하지 않는다."""
+    parts = []
+    if overseas:
+        parts.append(OVERSEAS_SAY)
+    if kids:
+        parts.append("아동용 상품이에요")
+    if fee is not None:
+        parts.append(_fee_text(fee, fee_conditional))
+    if stock_unknown and fee is None:
+        parts.append(UNVERIFIED_SAY)
+    elif stock_unknown:
+        parts.append("재고는 확인하지 못했어요")
+    elif fee is None:
+        parts.append("배송비는 확인하지 못했어요")
+    return " · ".join(parts)
+
+
 def _candidate_verdict(result: dict[str, Any], unreadable: str | None, dl, fee: int | None,
-                       fee_conditional: bool, kids: bool) -> tuple[str, list[str]]:
-    """후보로 낼지와 그 후보에 붙일 말을 코드가 정한다(글 규칙만으로는 실사용에서 해외직구를 밝히지 않았다).
+                       fee_conditional: bool, kids: bool) -> tuple[str, str]:
+    """후보로 낼지와 그 후보에 붙일 말(한 줄)을 코드가 정한다(글 규칙만으로는 실사용에서 해외직구를 밝히지 않았다).
     verdict: ok | unverified(못 읽음, 내되 밝힘) | overseas(다른 후보가 없을 때만) |
              drop_sold_out | drop_profile | drop_deadline"""
     if result["in_stock"] == "no":
-        return "drop_sold_out", []
+        return "drop_sold_out", ""
     if result["violates_profile"] == "yes":
-        return "drop_profile", []
+        return "drop_profile", ""
     if dl is not None and (result["arrives_by_deadline"] == "no" or result["domestic_shipping"] == "no"):
-        return "drop_deadline", []
-    say = []
-    verdict = "ok"
-    if result["domestic_shipping"] == "no":
-        verdict = "overseas"
-        say.append(OVERSEAS_SAY)
-    if kids:
-        say.append("아동용 상품이에요")
+        return "drop_deadline", ""
+    overseas = result["domestic_shipping"] == "no"
     stock_unknown = result["in_stock"] == "unknown"
-    if stock_unknown and fee is None:
-        say.append(UNVERIFIED_SAY)
-    elif stock_unknown:
-        say.append("재고는 확인하지 못했어요")
-    elif fee is None:
-        say.append("배송비는 확인하지 못했어요")
-    if fee is not None:
-        say.append("무료배송" if fee == 0 else
-                   f"배송비 {fee:,}원 따로" + (" (조건에 따라 무료일 수 있어요)" if fee_conditional else ""))
-    if verdict == "ok" and (unreadable is not None or stock_unknown):
-        verdict = "unverified"
-    return verdict, say
+    verdict = "overseas" if overseas else ("unverified" if unreadable is not None or stock_unknown else "ok")
+    return verdict, _say_line(overseas=overseas, kids=kids, stock_unknown=stock_unknown, fee=fee,
+                              fee_conditional=fee_conditional)
 
 
 @mcp.tool()
@@ -413,7 +427,7 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
     deadline 은 '이번 주 안', '수요일까지', '2026-11-12' 등.
     반환: in_stock / domestic_shipping / arrives_by_deadline / violates_profile (yes|no|unknown), note, buy_url,
           readable(페이지를 읽었는지), unreadable_reason, kids_item(상품명에 아동/키즈/주니어),
-          shipping_fee_krw(0 무료, null 모름), verdict, say(그 상품에 붙일 말).
+          shipping_fee_krw(0 무료, null 모름), verdict, say(그 상품 줄 아래에 붙일 한 줄).
     readable=false 이면 in_stock 은 unknown 이고 passed 는 false 다. 이때 '품절'이라고 말하면 안 된다.
     """
     forbidden = json.loads(forbidden_terms_json or "[]")
@@ -424,13 +438,14 @@ async def check_product(product_url: str, title: str = "", mall: str = "",
 # 후보 검증 상한. 후보마다 상품 페이지를 GET 한 번 읽는다(사용자 요청에 대한 답으로 보여 줄 페이지만).
 # 동시에 읽으므로 걸리는 시간은 가장 느린 페이지 하나 + 도구 호출 한 번이다. 카카오 콜백 240초 안에 넣으려고 상한을 둔다.
 MAX_CHECK = 3
-CHECK_BUDGET_S = 15
+CHECK_BUDGET_S = 8   # 8316893 실사용: 한 건 163초(전 약 120초). 위험을 줄이려고 15 → 8
 _NO_FETCH_HOSTS = ("coupang.com",)  # 쿠팡에는 요청하지 않는다(카카오에서 링크도 막혀 후보가 아니다)
 
 CHECK_CANDIDATES_NOTE = (
-    "show=true 인 후보만 답에 낸다(순서는 그대로). 각 후보의 say 줄은 그 후보의 '제품 · 옵션 · 가격' 줄 바로 아래에 "
-    "글자 그대로 쓴다(배송비는 가격 옆 정보다). verdict=overseas 는 다른 후보가 없을 때만 show=true 이고, say 첫 줄 "
-    "'해외배송'을 그 후보 설명 맨 앞에 둔다. drop_* 은 후보로 내지 않고, drop_reason 이 있으면 후보 목록 아래에 "
+    "show=true 인 후보만 답에 낸다(순서는 그대로). 각 후보의 say 한 줄을 그 후보의 '제품 · 옵션 · 가격' 줄 바로 아래에 "
+    "글자 그대로 쓴다. say 에 없는 재고·배송비 말을 따로 덧붙이지 않는다(검색 결과에서 본 배송비는 candidates 의 "
+    "shipping_fee_krw 로 넘기면 say 에 들어간다). verdict=overseas 는 다른 후보가 없을 때만 show=true 이고, say 가 "
+    "'해외배송'으로 시작한다. drop_* 은 후보로 내지 않고, drop_reason 이 있으면 후보 목록 아래에 "
     "'✗ 쇼핑몰이름: drop_reason' 한 줄로 이유를 남긴다.")
 # 탈락 이유 한 줄(SOUL "탈락한 것도 이유를 한 줄 남긴다"). 쿠팡·크라우드펀딩·잘못된 주소는 후보가 아니라 이유를 남기지 않는다.
 DROP_REASONS = {"drop_sold_out": "품절이에요", "drop_profile": "피하시는 조건에 해당해요",
@@ -463,36 +478,45 @@ def _log_line(attempt: int, naver_rule: str, results: list[dict[str, Any]]) -> s
             f"naver_hosts={naver_hosts} shown={sum(r['show'] for r in results)} {counts}")
 
 
+def _seen_fee(v: Any) -> int | None:
+    """검색 결과에서 본 배송비(에이전트가 넘긴 값). 숫자로 읽히지 않으면 모름."""
+    digits = re.sub(r"[^\d]", "", str(v if v is not None else ""))
+    return int(digits) if digits else None
+
+
 def _host_in(url: str, domains: tuple[str, ...]) -> bool:
     host = (urlsplit(url).hostname or "").lower().rstrip(".")
     return any(host == d or host.endswith("." + d) for d in domains)
 
 
 @mcp.tool()
-async def check_candidates(candidates: list[dict[str, str]], deadline: str = "",
+async def check_candidates(candidates: list[dict[str, Any]], deadline: str = "",
                            forbidden_terms_json: str = "[]", client_id: str = "",
                            attempt: int = 1) -> dict[str, Any]:
     """웹 검색으로 고른 후보(상품 페이지)를 답에 내기 전에 한 번에 검증한다(SKILL 3-b, 1-c).
-    candidates: [{"url": 상품 페이지 주소(검색 결과 그대로), "title": 검색 결과 제목, "mall": 쇼핑몰 이름}], 최대 3개.
-    후보마다 그 상품 페이지를 한 번만 읽는다. 동시에 읽고 전체 15초 안에 못 읽은 것은 '확인하지 못함'으로 돌려준다.
+    candidates: [{"url": 상품 페이지 주소(검색 결과 그대로), "title": 검색 결과 제목, "mall": 쇼핑몰 이름,
+                  "shipping_fee_krw": 검색 결과에 배송비가 보였을 때만 숫자(무료면 "0")}], 최대 3개.
+    후보마다 그 상품 페이지를 한 번만 읽는다. 동시에 읽고 8초 안에 못 읽은 것은 '확인하지 못함'으로 돌려준다.
     client_id: resolve_client 가 준 값(있으면). attempt: 이번 요청에서 몇 번째 확인인지(1 또는 2). 한 요청에 2번까지만 부른다.
-    반환 results[]: url, show(답에 낼지), verdict, say(그 후보에 붙일 말, 글자 그대로), drop_reason(뺀 이유 한 줄),
+    반환 results[]: url, show(답에 낼지), verdict, say(그 후보 줄 아래에 붙일 한 줄, 글자 그대로), drop_reason(뺀 이유 한 줄),
     shipping_fee_krw, buy_url. note 와 next_step 을 따른다."""
     forbidden = json.loads(forbidden_terms_json or "[]")
     dl = gates.parse_deadline(deadline) if deadline else None
 
-    async def one(c: dict[str, str]) -> dict[str, Any]:
+    async def one(c: dict[str, Any]) -> dict[str, Any]:
         url = str(c.get("url", "")).strip()
         if not re.match(r"^https?://", url, re.I):
-            return {"url": url, "verdict": "drop_bad_url", "say": [], "checked": False}
+            return {"url": url, "verdict": "drop_bad_url", "say": "", "checked": False}
         if profiles._is_blocked_url(url) or _host_in(url, _NO_FETCH_HOSTS):
-            return {"url": url, "verdict": "drop_not_candidate", "say": [], "checked": False}
+            return {"url": url, "verdict": "drop_not_candidate", "say": "", "checked": False}
+        seen_fee = _seen_fee(c.get("shipping_fee_krw"))
         try:
-            r = await asyncio.wait_for(_check_one(url, c.get("title", ""), c.get("mall", ""), dl, forbidden),
-                                       CHECK_BUDGET_S)
+            r = await asyncio.wait_for(_check_one(url, c.get("title", ""), c.get("mall", ""), dl, forbidden,
+                                                  seen_fee), CHECK_BUDGET_S)
         except TimeoutError:
-            return {"url": url, "verdict": "unverified", "say": [UNVERIFIED_SAY], "checked": False,
-                    "unreadable_reason": "시간 안에 못 읽음", "buy_url": url, "shipping_fee_krw": None}
+            say = _say_line(overseas=False, kids=False, stock_unknown=True, fee=seen_fee, fee_conditional=False)
+            return {"url": url, "verdict": "unverified", "say": say, "checked": False,
+                    "unreadable_reason": "시간 안에 못 읽음", "buy_url": url, "shipping_fee_krw": seen_fee}
         return {"url": url, "checked": True, **{k: r[k] for k in (
             "verdict", "say", "shipping_fee_krw", "buy_url", "readable", "unreadable_reason", "in_stock",
             "domestic_shipping", "kids_item", "note")}}
