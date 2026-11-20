@@ -220,6 +220,7 @@ cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
 - 보고는 항목마다 원인 / 고친 것 / 정할 것으로 나누고, 테스트 결과와 커밋 해시를 적는다.
 - 파괴적 명령은 먼저 확인한다.
 - 커밋 메시지는 한국어로 쓰고, 왜 바꿨는지 적는다.
+- 커밋하면 origin 으로 push 까지 하고, 보고에 push 했는지 적는다(force push 금지. main 이 아니거나 origin/main 과 갈라져 있으면 push 하지 않고 멈춰서 알린다).
 
 ## 6. 확인된 사실
 - VPS 시계는 UTC 다. 날짜를 정하는 코드는 한국 시간(`Asia/Seoul`)을 쓴다(`record_item` 의 date·asked_on).
