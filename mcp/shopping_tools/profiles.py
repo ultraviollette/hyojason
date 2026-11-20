@@ -9,7 +9,9 @@
 - 읽을 때는 옛 형식도 standardize() 로 표준 형식으로 바꿔 읽는다. 파일을 고치려면 migrate_profiles 를 쓴다.
 - items: 찾아 드린(found)·고르신(chosen) 물건. record_item 도구만 쓰고, 칸·개수(최근 50건)를 코드로 강제한다.
   실제 결제 여부는 알 수 없으므로 기록하지 않는다.
-- payment: 주로 사는 곳(place)과 결제하는 사람(by: "" 아직 안 물음 | self | family). 다른 사람에게 연락하는 칸은 없다.
+- payment: 주로 사는 곳(place)과 결제하는 사람(by: "" 모름 | self | family), 결제 방식을 물어본 날(asked_on).
+  결제 질문은 평생 한 번만: record_item(found) 이 정하고 asked_on 을 채운다(스킬 글에 맡기지 않음).
+  다른 사람에게 연락하는 칸은 없다.
 - history: 예전 log_recommendation 의 자유 형식 기록. 읽기만 하고 더 쓰지 않는다.
 """
 from __future__ import annotations
@@ -53,7 +55,7 @@ def empty_profile() -> dict[str, Any]:
         "shopping_rules": {"default_deadline_days": None, "allow_overseas_when_no_deadline": True,
                            "max_candidates": 3},
         "delivery": {"region": ""},
-        "payment": {"place": "", "by": ""},
+        "payment": {"place": "", "by": "", "asked_on": ""},
         "notes": [],
         "items": [],
         "history": [],
@@ -212,6 +214,13 @@ def standardize(raw: dict[str, Any], stem: str = "") -> tuple[dict[str, Any], li
         place = _str(pay.pop("place", "")).strip()
         by = _str(pay.pop("by", "")).strip()
         p["payment"]["place"] = place[:MAX_PLACE]
+        asked_on = _str(pay.pop("asked_on", "")).strip()
+        if asked_on:
+            try:
+                datetime.strptime(asked_on, "%Y-%m-%d")
+                p["payment"]["asked_on"] = asked_on
+            except ValueError:
+                note("payment.asked_on", asked_on)
         if by in PAYMENT_BY:
             p["payment"]["by"] = by
         elif by:
@@ -294,27 +303,37 @@ def _trim_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def record_item(client_id: str, *, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
-                seller: str = "", seen_price_krw: int | None = None, today: str | None = None) -> dict[str, Any]:
-    """찾아 드린(found)·고르신(chosen) 물건을 정해진 칸으로 남긴다. 반환: 남긴 항목.
-    chosen 은 같은 날 같은 브랜드·이름·옵션의 found 가 있으면 그 항목을 chosen 으로 바꾼다(두 줄로 남지 않게)."""
+                seller: str = "", seen_price_krw: int | None = None,
+                today: str | None = None) -> tuple[dict[str, Any], bool]:
+    """찾아 드린(found)·고르신(chosen) 물건을 정해진 칸으로 남긴다. 반환: (남긴 항목, ask_payment).
+    chosen 은 같은 날 같은 브랜드·이름·옵션의 found 가 있으면 그 항목을 chosen 으로 바꾼다(두 줄로 남지 않게).
+    ask_payment: 결제 방식을 아직 모르고(payment.by 비어 있음) 한 번도 묻지 않았을 때(asked_on 비어 있음)
+    found 를 기록하는 첫 호출에서만 True 이고, 그 순간 asked_on 에 한국 날짜를 채운다. 그래서 한 답에서 후보를
+    여러 개 기록해도, 대화가 새로 시작돼도, 사용자가 답하지 않아도 평생 한 번만 True 가 나온다."""
     cur = get_profile(client_id)
     if cur is None:
         raise ValueError("프로필이 없어요. 먼저 resolve_client / save_client_profile 로 확인하세요")
-    item = _clean_item({"date": today or datetime.now(KST).date().isoformat(), "status": status, "brand": brand,
-                        "name": name, "options": options, "seller": seller, "seen_price_krw": seen_price_krw})
+    day = today or datetime.now(KST).date().isoformat()
+    item = _clean_item({"date": day, "status": status, "brand": brand, "name": name, "options": options,
+                        "seller": seller, "seen_price_krw": seen_price_krw})   # 칸이 틀리면 여기서 멈춘다(asked_on 안 채움)
+
+    ask_payment = item["status"] == "found" and not cur["payment"]["by"] and not cur["payment"]["asked_on"]
+    if ask_payment:
+        cur["payment"]["asked_on"] = day
+
     items = cur["items"]
     match = next((i for i, x in enumerate(items) if _same_item(x, item)), None)
-    if match is not None:
-        old = items[match]
-        if old["status"] == "chosen" and item["status"] == "found":
-            return old                   # 이미 고르신 물건을 다시 찾아 드림: 고르신 기록을 그대로 둔다
-        items.pop(match)                 # 같은 물건은 한 줄로: found→chosen 전환, 같은 상태면 최신으로 올림
-        item = {**item, "seller": item["seller"] or old["seller"],
-                "seen_price_krw": item["seen_price_krw"] if item["seen_price_krw"] is not None
-                else old["seen_price_krw"]}
-    cur["items"] = _trim_items([item, *items])
+    if match is not None and items[match]["status"] == "chosen" and item["status"] == "found":
+        item = items[match]              # 이미 고르신 물건을 다시 찾아 드림: 고르신 기록을 그대로 둔다
+    else:
+        if match is not None:            # 같은 물건은 한 줄로: found→chosen 전환, 같은 상태면 최신으로 올림
+            old = items.pop(match)
+            item = {**item, "seller": item["seller"] or old["seller"],
+                    "seen_price_krw": item["seen_price_krw"] if item["seen_price_krw"] is not None
+                    else old["seen_price_krw"]}
+        cur["items"] = _trim_items([item, *items])
     _write(cur)
-    return item
+    return item, ask_payment
 
 
 def agent_view(profile: dict[str, Any] | None) -> tuple[dict[str, Any] | None, int]:

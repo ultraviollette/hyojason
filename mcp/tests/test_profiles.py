@@ -163,7 +163,7 @@ def test_old_profile_without_new_fields_still_reads(tmp_clients) -> None:
     _write(tmp_clients, f"{old['client_id']}.yaml", old)
     p = server.resolve_client("kakao", KAKAO_ID)["profile"]
     assert p["display_name"] == "어머니"
-    assert p["payment"] == {"place": "", "by": ""}          # self 는 옮기지 않아 "아직 안 물음"
+    assert p["payment"] == {"place": "", "by": "", "asked_on": ""}   # self 는 옮기지 않아 "모름", 물어본 적도 없음
     assert p["items"] == [] and p["notes"] == []            # 빈 연락처는 버린다
     assert p["history"] == old["history"]                   # history 는 읽기만
     assert set(p) == STANDARD_KEYS
@@ -179,9 +179,10 @@ def test_old_delegate_moves_to_family_and_contact_is_kept_in_notes() -> None:
 
 def test_payment_fields_save_validate_and_do_not_erase() -> None:
     r = server.save_client_profile("kakao", KAKAO_ID, payment_place="쿠팡", payment_by="family")
-    assert r["profile"]["payment"] == {"place": "쿠팡", "by": "family"}
+    assert r["profile"]["payment"] == {"place": "쿠팡", "by": "family", "asked_on": ""}
     server.save_client_profile("kakao", KAKAO_ID, display_name="어머니")          # 빈 값은 지우지 않는다
-    assert server.resolve_client("kakao", KAKAO_ID)["profile"]["payment"] == {"place": "쿠팡", "by": "family"}
+    assert server.resolve_client("kakao", KAKAO_ID)["profile"]["payment"] == {"place": "쿠팡", "by": "family",
+                                                                               "asked_on": ""}
     assert server.save_client_profile("kakao", KAKAO_ID, payment_by="delegate")["saved"] is False
     assert server.save_client_profile("kakao", KAKAO_ID, payment_place="가" * 21)["saved"] is False
 
@@ -263,3 +264,51 @@ def test_new_fields_survive_reread_and_migration(tmp_clients) -> None:
     migrate_profiles.main(["--dir", str(tmp_clients), "--apply"])
     after = profiles.get_profile(cid)
     assert after["payment"] == before["payment"] and after["items"] == before["items"] and after["notes"] == []
+
+
+# ---------- 결제 질문은 평생 한 번 (payment.asked_on) ----------
+
+def _found(cid, name, day="2026-11-20"):
+    return profiles.record_item(cid, status="found", name=name, today=day)
+
+
+def test_ask_payment_true_once_per_lifetime_even_without_answer() -> None:
+    cid = _cid()
+    asks = [_found(cid, f"후보 {i}")[1] for i in range(3)]        # 한 답에서 후보 3개 기록
+    assert asks == [True, False, False]
+    assert profiles.get_profile(cid)["payment"]["asked_on"] == "2026-11-20"
+    # 답을 안 하셨고, 30분 뒤 새 대화·다른 날이어도 다시 묻지 않는다
+    assert _found(cid, "다른 날 후보", day="2026-12-01")[1] is False
+    r = server.record_item(cid, "found", "도구로 기록")
+    assert r["recorded"] is True and r["ask_payment"] is False
+    assert profiles.get_profile(cid)["payment"]["asked_on"] == "2026-11-20"   # 처음 물은 날 그대로
+
+
+def test_ask_payment_false_when_payment_known_or_chosen_or_invalid() -> None:
+    cid = server.save_client_profile("kakao", KAKAO_ID, payment_by="self")["client_id"]
+    assert _found(cid, "후보")[1] is False                             # 이미 알면 묻지 않는다
+    assert profiles.get_profile(cid)["payment"]["asked_on"] == ""
+
+    other = server.save_client_profile("kakao", "other-user", display_name="아버지")["client_id"]
+    assert profiles.record_item(other, status="chosen", name="고른 물건", today="2026-11-20")[1] is False
+    bad = server.record_item(other, "found", " ")                      # 칸이 틀리면 asked_on 을 채우지 않는다
+    assert bad["recorded"] is False and bad["ask_payment"] is False
+    assert profiles.get_profile(other)["payment"]["asked_on"] == ""
+    assert _found(other, "후보")[1] is True                            # 첫 found 에서 묻는다
+
+
+def test_user_can_tell_payment_later_regardless_of_asked_on() -> None:
+    cid = _cid()
+    assert _found(cid, "후보")[1] is True                              # 물었지만 답이 없었다
+    r = server.save_client_profile("kakao", KAKAO_ID, payment_place="네이버", payment_by="family")
+    assert r["saved"] is True
+    assert r["profile"]["payment"] == {"place": "네이버", "by": "family", "asked_on": "2026-11-20"}
+
+
+def test_asked_on_survives_reread_migration_and_bad_value_is_kept_in_notes(tmp_clients) -> None:
+    cid = _cid()
+    _found(cid, "후보")
+    migrate_profiles.main(["--dir", str(tmp_clients), "--apply"])
+    assert profiles.get_profile(cid)["payment"]["asked_on"] == "2026-11-20"
+    std, _ = profiles.standardize({"payment": {"by": "", "asked_on": "어제"}})
+    assert std["payment"]["asked_on"] == "" and "payment.asked_on: 어제" in std["notes"]

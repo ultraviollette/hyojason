@@ -207,10 +207,11 @@ SOUL.md의 결과 메시지 형식으로. 마지막에 후보마다 `N번 쇼핑
 - 기록: 후보(상품 페이지)를 드렸으면 후보마다 `record_item(client_id, status="found", name, brand, options, seller, seen_price_krw)` 를 부른다.
   options 는 그 물건에서 갈리는 것(용량·색·호수·매수 등). seen_price_krw 는 검색 결과나 페이지에 가격이 적혀 있던 경우만 넣고, 모르면 비운다.
   네이버 검색 링크·쿠팡 앱 검색어처럼 상품이 정해지지 않은 것은 기록하지 않는다.
-- 결제 방식 묻기: 처음으로 후보를 드리는 답이고 profile.payment.by 가 비어 있으면, 답 끝에 한 번만 묻는다.
+- 결제 방식 묻기: 이번 답에서 부른 record_item 응답 중 하나라도 `ask_payment` 가 true 일 때만 답 끝에 묻는다.
   "주로 어디서 사세요(쿠팡, 네이버 등)? 결제는 직접 하세요, 가족분이 해 주세요?"
-  이 질문은 한 질문으로 센다. 같은 대화에서 이미 물었으면 다시 묻지 않는다. payment.by 가 있으면 묻지 않는다.
-  답을 받으면 `save_client_profile(channel="kakao", channel_user_id=…, payment_place=…, payment_by="self" 또는 "family")` 로 저장한다.
+  묻는 때는 도구가 정한다(결제 방식을 모르고 한 번도 묻지 않았을 때 평생 한 번). ask_payment 가 false 면 묻지 않는다.
+  이 질문은 한 질문으로 센다. 답이 없어도 다시 묻지 않는다.
+  사용자가 언제든 스스로 말하면(답이든 나중이든) `save_client_profile(channel="kakao", channel_user_id=…, payment_place=…, payment_by="self" 또는 "family")` 로 저장한다.
 - 가족이 결제하시는 분(payment.by == family): 답 끝에 "이 화면을 가족분께 보여 주세요"와 함께 후보마다 한 줄씩 정리한다.
   예: "1번 ELO 플라워 텀블러 · 240ml 네이비 · 11번가". 다른 사람에게 메시지를 보내지 않는다.
 - 주로 사는 곳(payment.place)이 있으면 그 가게 후보를 먼저 찾는다.

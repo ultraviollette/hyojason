@@ -68,6 +68,7 @@ def save_client_profile(channel: str, channel_user_id: str, display_name: str = 
     display_name: 부를 호칭(예: 어머니). top_size/bottom_size: 예 "55", "M". shoe_size_mm: 예 "235".
     delivery_region: 배송 지역(시·군 정도, 정확한 주소는 받지 않는다). likes/dislikes: 좋아하는 것/싫어하는 것 목록.
     payment_place: 주로 사는 곳(자유 입력, 20자 이내, 예: "쿠팡"). payment_by: "self"(본인) | "family"(다른 가족).
+    결제 방식은 물어본 적이 있든 없든(asked_on), 사용자가 말하면 언제든 저장한다.
     결제 정보(카드·계좌)와 다른 사람 연락처는 받지 않는다.
     notes: 위에 없는 기타 메모 목록(예: "라인댄스를 함"). 빈 값은 기존 값을 지우지 않고, 목록은 합친다."""
     try:
@@ -89,13 +90,14 @@ def record_item(client_id: str, status: str, name: str, brand: str = "", options
     name: 제품 이름(필수). brand: 브랜드(모르면 비움). options: 그 물건에서 갈리는 것 {"용량": "240ml", "색": "네이비"} (6개까지).
     seller: 판매처 이름. seen_price_krw: 그때 본 가격(원). 검색 결과나 페이지에 적혀 있던 경우만, 모르면 비운다.
     결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
-    같은 날 같은 브랜드·이름·옵션의 found 를 chosen 으로 남기면 그 항목이 chosen 으로 바뀐다. 최근 50건까지 보관."""
+    같은 날 같은 브랜드·이름·옵션의 found 를 chosen 으로 남기면 그 항목이 chosen 으로 바뀐다. 최근 50건까지 보관.
+    ask_payment 가 true 일 때만 이번 답 끝에 결제 방식 질문을 붙인다. 도구가 평생 한 번만 true 를 준다."""
     try:
-        item = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
-                                    seller=seller, seen_price_krw=seen_price_krw)
+        item, ask_payment = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
+                                                 seller=seller, seen_price_krw=seen_price_krw)
     except ValueError as e:
-        return {"recorded": False, "error": str(e)}
-    return {"recorded": True, "item": item}
+        return {"recorded": False, "error": str(e), "ask_payment": False}
+    return {"recorded": True, "item": item, "ask_payment": ask_payment}
 
 
 # ---------- 검색 ----------
