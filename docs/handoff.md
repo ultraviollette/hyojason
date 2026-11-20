@@ -1,0 +1,199 @@
+# 효자손 인수인계 (2026-11-20 기준)
+
+이어서 작업할 사람(또는 에이전트)을 위한 메모다. 구조 설명은 [architecture.md](architecture.md)에 있고, 여기에는 11/19~20 실사용 시험을 반영하며 바뀐 것만 적는다.
+실제 프로필 내용·시크릿·사용자 ID 는 이 문서에 적지 않는다.
+
+## 1. 커밋 목록 (11/19~20)
+
+| 커밋 | 한 일 |
+|---|---|
+| 889f97e | 11/19 시험 반영: 브랜드를 모르는 사진은 "닮은 제품"이라 말하기, 용량은 위아래 30%까지 넓혀 찾기, 사진에 맞는 숫자 예시, 이미 나온 조건은 다시 묻지 않기 |
+| 0e7e153 | 프로필에 items(찾아 드림/고르심 기록)와 payment(주로 사는 곳·결제하는 사람) 추가, `record_item` 도구 추가(`log_recommendation` 제거) |
+| 7be3469 | 결제 방식 질문을 평생 한 번만: `payment.asked_on` 을 `record_item(found)` 이 정한다 |
+| 5f4fc69 | 못 찾았을 때 검색어 바꿔 최대 3번 다시 찾기(SKILL 3-c), 확인 못 한 사실(국적·국내 판매·단종) 말하지 않기 |
+| 3c6e349 | 카카오 브릿지에서 이어서 온 메시지 합치기(대기 후 한 턴으로, 처리 중 온 것은 다음 턴으로, 질문형 답 보내지 않기) |
+| 4a8d43d | 결제 질문은 후보 답 맨 끝에만(`ask_payment_note`), 질문 묶음은 한 번만, 브랜드가 있으면 "브랜드 + 종류"로 넓게 검색, 대기 말 금지 |
+| 23e409b | 기한은 사용자가 꺼냈을 때만, 크기는 누구나 아는 물건 둘 중에 고르게 묻기, 사진 utterance 형태 로그 스위치 |
+| ab1bee4 | 사진 utterance 의 주소 글자 빼기, 사진만 온 경우 대기 12초/15초, items.url, 링크만 있는 답 금지, `confirm_phrase`, `payment.places` + 쿠팡 `place_rules`, 정가 대신 판매가 |
+| 9b34eb9 | 주로 사는 곳에 네이버가 있으면 스마트스토어·브랜드스토어 상품 페이지를 앞에(`place_rules`), 네이버 쇼핑 검색 API 경로에 "2026-07-31 종료" 주석 |
+| f807d13 | (site) 소개 페이지 쿠팡 파트너스 링크 교체(엠보엘로우 텀블러) |
+| e9a41eb | (site) 같은 링크의 상품 표시 이름 변경(엠보엘로우 → 가든화이트) |
+
+## 2. 새로 생긴 구조
+
+### 2-1. 카카오 브릿지의 메시지 합치기 (`kakao-bridge-vps/server.py`)
+
+**대기 시간** (`Settings`, 초)
+
+| 칸 | 값 | 뜻 |
+|---|---|---|
+| `wait_first_text_s` | 4 | 글로 시작한 첫 메시지 뒤 대기 |
+| `wait_first_photo_s` | 12 | 아직 사진만 와 있을 때 마지막 사진 뒤 대기(여러 장이어도 같음) |
+| `wait_more_s` | 4 | 글이 섞인 뒤 새 메시지가 오면 마지막 메시지부터 다시 대기 |
+| `wait_max_text_s` | 10 | 글로 시작했을 때 첫 메시지부터 최대 대기 |
+| `wait_max_photo_s` | 15 | 사진으로 시작했을 때 첫 메시지부터 최대 대기 |
+
+보내는 시각 = min(첫 도착 + 최대 대기, 마지막 도착 + 대기). 처리 중에 온 메시지는 끊지 않고 모아서 다음 한 턴으로 보낸다.
+
+**질문형 답 보내지 않기** (`is_question_reply`)
+- 다음이 모두 맞으면 Hermes 답을 보내지 않는다.
+  - 처리 중에 새 메시지가 와 있다.
+  - 답 원문에 `http(s)://` 가 없다.
+  - 물음표(`?` 또는 `？`)가 있다.
+  - 결제 질문("주로 어디서 사세요")이 아니다.
+- 보내지 않은 턴의 콜백은 닫기 문구로 닫는다. 다음 턴에는 `BRIDGE_NOTE`("[브릿지 안내: 직전 당신의 답은 사용자에게 전달되지 않았다…]")를 붙이고, 그 턴의 메시지(사진 포함)를 다시 넣는다.
+- 사용자 글 속 "[브릿지 안내" 표식은 대괄호를 없애 진짜 안내와 구분한다(`neutralize_user_text`).
+
+**문구**
+
+| 상수 | 문구 | 언제 |
+|---|---|---|
+| `QUICK_ACK` | "가게 몇 군데 돌아보고 올게요. 길면 2~3분 걸려요.…" | 즉시 응답(관리자센터의 응답대기 메시지와 같게 맞춤) |
+| `CLOSE_MSG` | "이어서 보내 주신 것까지 같이 볼게요." | 합쳐진 앞 메시지의 콜백, 보내지 않은 질문형 답의 콜백 |
+| `RESET_DROP_MSG` | "앞에 보내 주신 건 접어 두고 처음부터 할게요." | "처음부터"·"새로 시작"이 왔을 때 대기·처리 중이던 메시지 |
+| `LINKS_ONLY_BODY` | "아래 버튼을 눌러 열어 보세요." | 답에 링크만 있고 본문이 비었을 때 카드 설명 칸 |
+| `FAIL_MSG` | "죄송해요, 지금은 찾기가 어려워요.…" | Hermes 실패·타임아웃, 안전망 |
+
+**사진 utterance 처리** (`strip_image_utterance`)
+- 카카오 사진 메시지의 utterance 는 사진 주소 그 자체다(형태 로그로 확인: `starts_url=1 has_param_image=1`).
+- utterance 가 params 에서 찾은 이미지 주소와 같거나 그 주소를 담고 있을 때만 그 글자를 뺀다. 다른 주소는 건드리지 않는다.
+- 사진만 온 메시지는 Hermes 에 "(사진만 보냄)"으로, 합쳐진 메시지에서는 "(사진)"으로 간다. 사진은 같은 턴의 `input_image` 로 함께 보낸다.
+
+**로그 줄 형식** (사용자 글·사용자 ID·callbackUrl·시크릿은 남기지 않는다)
+```
+path=arrive seq=<n> image=<0|1> text_len=<n> merged=<0|1>[,new_conversation]
+path=batch seq=<a>-<b> size=<n>
+path=callback seq=<n> outcome=<값> duration_ms=<도착부터 ms>
+path=skill outcome=<forbidden|bad_json|reset> duration_ms=<n>
+path=sync outcome=<sync_ok|sync_fail:<예외 이름>> duration_ms=<n>
+path=utterance_shape seq=<n> len=<n> starts_url=<0|1> has_param_image=<0|1> json=<0|1> shape=<모양>
+```
+
+callback `outcome` 값:
+- 기본값
+  - `ok`: 답을 보냄
+  - `closed_merged`: 합쳐진 앞 메시지를 닫음
+  - `suppressed_question`: 질문형 답을 보내지 않음
+  - `dropped_by_reset`: 처음부터로 버림
+  - `hermes_timeout`, `hermes_error:<예외 이름>`: Hermes 실패
+  - `fail_safe`: 예외로 빠진 경우의 안전망
+- 뒤에 붙는 표시
+  - `,payment_q_no_links`: 결제 질문만 있고 주소가 없는 답
+  - `,links_only`: 본문 없이 링크만 온 답
+  - `,callback_http_<code>`, `,callback_error:<예외 이름>`: 콜백 전송 실패
+
+**형태 로그 스위치**
+- 표시 파일 `~/.config/hyojason/debug-utterance-shape` 가 있을 때만, 사진이 있는 메시지마다 한 줄을 남긴다. 기본은 꺼짐이다.
+- 서비스가 `hermes` 사용자로 돌아서 실제 위치는 `/home/hermes/.config/hyojason/debug-utterance-shape` 이다.
+- 켜기: `mkdir -p ~/.config/hyojason && touch ~/.config/hyojason/debug-utterance-shape`
+- 끄기: `rm ~/.config/hyojason/debug-utterance-shape`
+- 켜고 끌 때 재시작은 필요 없다.
+- shape 는 글자를 지운 모양만 남긴다: 한글→가, 영문→a, 숫자→9, 공백→_, 다른 글자→x, ASCII 기호는 그대로, 200자까지.
+
+### 2-2. 프로필 (`mcp/shopping_tools/profiles.py`, 양식 `clients/_example.yaml`)
+- 스키마는 코드가 강제한다. 옛 형식 파일도 `standardize()` 로 읽는다.
+- 실제 파일은 `HYOJASON_CLIENTS_DIR` 아래에 있고 git 에 올리지 않는다.
+
+**items** (`record_item` 으로만 쓴다)
+
+| 칸 | 뜻 |
+|---|---|
+| `date` | 한국 날짜, 서버가 채움 |
+| `status` | `found`(찾아 드림) \| `chosen`(고르심). 결제 여부는 기록하지 않음 |
+| `brand`, `name`, `options` | 옵션은 `{이름: 값}`, 6개까지 |
+| `seller` | 판매처 이름 |
+| `seen_price_krw` | 그때 본 실제 판매가(정가 아님). 모르면 null |
+| `url` | 선택. 답에 드린 상품 페이지 주소. 옛 기록은 `""` 로 읽힘. 크라우드펀딩(wadiz.kr·tumblbug.com) 주소면 기록 자체를 거절 |
+
+- 최근 50건까지 보관한다. 넘으면 오래된 found 부터 지우고, chosen 은 끝까지 남긴다.
+- 같은 날·같은 브랜드·이름·옵션이면 한 줄로 합친다. found 를 chosen 으로 남기면 그 줄이 chosen 으로 바뀐다. 빈 값은 옛 값을 지킨다.
+- 도구가 돌려주는 items 는 chosen 전부와 최근 found 10건이다(`items_omitted` 로 뺀 건수를 알림).
+- 쿠팡 파트너스 API 데이터는 약관상 저장 금지다. 지금은 그 API 가 꺼져 있다. 켜기 전에 `url`·`seen_price_krw` 로 들어오지 않게 막아야 한다(`_clean_url` 주석).
+
+**payment**
+
+| 칸 | 뜻 |
+|---|---|
+| `places` | 주로 사는 곳 목록(가게마다 20자, 5곳까지). 새로 말하면 바꿈. 옛 `place: "쿠팡, 네이버"` 한 줄은 목록으로 읽음 |
+| `by` | `""`(모름) \| `self` \| `family` |
+| `asked_on` | 결제 방식을 물어본 날. `record_item(found)` 이 채움. 채워지면 다시 묻지 않음 |
+
+### 2-3. 도구 응답에 실리는 규칙 (`mcp/shopping_tools/server.py`)
+글 규칙만으로는 실사용에서 잘 안 지켜졌다. 반면 도구 응답에 실은 규칙은 지켜졌다. 그래서 중요한 규칙은 응답에 싣는다.
+
+| 이름 | 어디에 | 언제 |
+|---|---|---|
+| `ask_payment` / `ask_payment_note` | `record_item` | 결제 방식을 모르고 물은 적도 없을 때 found 첫 기록에서 한 번만. 노트는 "후보와 링크를 다 쓰고 맨 끝에 결제 질문 한 줄" |
+| `place_rules` | `resolve_client`, `get_client_profile`, `save_client_profile`, `record_item(found)` | `places` 에 쿠팡이 있으면 `COUPANG_FIRST_NOTE`(쿠팡 검색어 줄을 답 맨 앞에). 네이버가 있으면 `NAVER_FIRST_NOTE`(웹 검색 후보 중 smartstore.naver.com·brand.naver.com 상품 페이지를 앞에). 둘 다면 쿠팡이 먼저. 해당 없으면 칸 자체가 없음 |
+| `items[].confirm_phrase` | 프로필 보기(파일에는 저장 안 함) | chosen → "지난번 ○○ 맞으세요?", found → "지난번에 찾아 드렸던 ○○ 말씀이세요?" |
+
+- `save_client_profile` 이 `saved=false` 를 주면 "기억해 둘게요"라고 말하지 않게 했다(도구 설명과 SOUL·SKILL).
+- 네이버 쇼핑 검색 API 는 2026-07-31 에 종료됐다. 경로는 지우지 않고 주석만 달았다.
+  - `mcp/shopping_tools/naver.py` 모듈 설명과 `NAVER_URL`
+  - `mcp/shopping_tools/server.py` 의 `_naver_provider` 와 `SEARCH_PROVIDERS` 의 naver 줄
+- `make_search_links` 의 네이버쇼핑 검색 링크(m.search.naver.com)는 이 API 가 아니다.
+
+## 3. 이번에 바뀐 프롬프트 규칙의 위치
+
+Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작업자가 건드리지 않는다.
+
+**SKILL.md** (`hermes/skills/hyojason-shopping/SKILL.md`)
+
+| 섹션 | 바뀐 규칙 |
+|---|---|
+| 1. 요청 해석 | 지난 기록 확인은 `confirm_phrase` 를 그대로 쓴다. 기한은 1단계에서 뽑기만 한다 |
+| 1-a. 상표·제품 이름이 안 보이는 사진 | 크기는 "종이컵만 한가요, 생수병만 한가요?"처럼 아는 물건 둘 중에 고르게. ③ 예시는 색 |
+| 1-d. 확인받은 지난 물건 다시 드리기 (새 섹션) | url 이 있으면 다시 검색하지 않는다. 제품 줄 + "그때 본 가격이라 지금은 다를 수 있어요. 재고·도착일은 링크에서 확인하세요." |
+| 2. 되묻기 (한 번에) | 질문 묶음은 한 번만. 기한은 사용자가 꺼냈을 때만. 예시 질문은 색 |
+| 3. 검색 | 브랜드가 있으면 "브랜드 + 종류"로 넓게. 쇼핑몰 표기로 바꾸기. 크기 비유는 검색어에 넣지 않기 |
+| 3-b. 웹 검색으로 후보 찾기 | 1단계의 기한 조건. 가격은 실제 판매가 |
+| 3-c. 못 찾았을 때 검색어 바꿔 다시 찾기 | 최대 3번 다시 찾기 |
+| 7. 기록 | `record_item` 에 url |
+| 후보를 드리는 답에서 할 일 | url 기록, 가격(판매가 / 확신 없으면 단정 금지), `payment_places`, `saved=false`, `place_rules`(쿠팡·네이버), 답 맨 앞 줄 |
+| 링크 표기 규칙 | 링크만 있는 답 금지(물건마다 제품·옵션·가격 줄 + "재고·도착일은 링크에서 확인하세요") |
+| 대화 규칙 | 찾기 전 군말("알겠어요. 사진 속 ○○ 찾아볼게요.") 금지, 도구를 부르기 전에 글을 쓰지 않기 |
+
+**SOUL.md** (`hermes/SOUL.md`)
+
+| 섹션 | 바뀐 규칙 |
+|---|---|
+| 네가 하는 일 | 2번: 기한은 사용자가 꺼냈을 때만 |
+| 절대 규칙 | 정가 대신 실제 판매가 / 확인 못 한 사실 말하지 않기 |
+| 대화 규칙 | 질문 묶음 한 번, 사진 확인 ①②③(③ 예시는 색) |
+| 말투 | 결제 질문 자리, 군말 금지, 크기 비교 질문, 버튼 답에는 제품·옵션·가격 줄, 도착일은 확인한 경우에만 |
+| 클라이언트 프로필 | `confirm_phrase`, 확인받은 기록의 url 먼저, `payment_places`, `saved=false`, `place_rules`(쿠팡·네이버) |
+
+## 4. 테스트
+
+```bash
+cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 44 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 56 passed
+```
+- 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
+- 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
+
+## 5. 작업 규칙
+- `~/.hermes/` 는 읽지도 쓰지도 않는다.
+- `.env` 는 건드리지 않는다.
+- README 는 지시가 있기 전까지 건드리지 않는다.
+- 쿠팡을 포함해 쇼핑몰에 자동 요청을 보내지 않는다.
+- 실제 프로필 파일은 git 에 올리지 않는다(`clients/*` 는 `.gitignore`). 옛 프로필이 그대로 읽히게 한다.
+- 확실하지 않으면 추측하지 말고 멈춰서 묻는다. 확인하지 못한 사실은 코드가 아니라 보고에 "확인 필요"로 적는다.
+- 외부 API·서비스는 공식 문서를 직접 읽고 확인한 내용으로만 구현한다. 못 읽으면 멈추고 무엇이 필요한지 말한다.
+- 수정 전에 원인을 먼저 설명한다.
+- 보고는 항목마다 원인 / 고친 것 / 정할 것으로 나누고, 테스트 결과와 커밋 해시를 적는다.
+- 파괴적 명령은 먼저 확인한다.
+- 커밋 메시지는 한국어로 쓰고, 왜 바꿨는지 적는다.
+
+## 6. 확인된 사실
+- VPS 시계는 UTC 다. 날짜를 정하는 코드는 한국 시간(`Asia/Seoul`)을 쓴다(`record_item` 의 date·asked_on).
+- 네이버 쇼핑 검색 API 는 2026-07-31 에 종료됐다(네이버 개발자센터 공지, 사용자가 원문 확인).
+- 카카오 사진 메시지의 utterance 는 사진 주소다. 형태 로그로 확인했다: `starts_url=1 has_param_image=1`, 길이 196.
+- 카카오 콜백(`callbackUrl`)은 메시지마다 1회, 최대 5분 유효하다.
+
+## 7. 아직 정해지지 않은 것
+- SOUL.md "절대 규칙"의 쇼핑과 무관한 입력 줄에 있는 "그건 자녀분께 직접 물어보시는 게 좋겠어요" 표현. 지금 파일에서는 38행이다.
+  - SKILL 3-b 쪽은 5f4fc69 에서 "가족이나 주변 분께"로 바뀌었다.
+- 배송비를 기록(items)에 남길지.
+- 찾기 전 군말이 계속 나오면, Hermes 응답의 글 덩어리 개수를 로그로 남길지. 개수만 남기고 내용은 남기지 않는다.
+  - 도구를 부르기 전에 쓴 글이 최종 답에 합쳐 오는지 확인하려는 것이다. 지금은 넣지 않기로 했다.
