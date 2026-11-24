@@ -11,9 +11,11 @@
   :root {
     --bg: #f6f9fc; --card: #ffffff; --text: #1f2a37; --muted: #5b6776; --line: #e3e9f0;
     --accent: #3b82c4; --kakao: #fee500; --kakao-text: #191919;
+    --notice-bg: #fff4d6; --notice-line: #e0a100; --notice-text: #4a3500;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #11161c; --card: #19212a; --text: #e8edf2; --muted: #9aa7b4; --line: #2a3542; --accent: #7db6e8; }
+    :root { --bg: #11161c; --card: #19212a; --text: #e8edf2; --muted: #9aa7b4; --line: #2a3542; --accent: #7db6e8;
+            --notice-bg: #3a2e0a; --notice-line: #f0b429; --notice-text: #ffe9a8; }
   }
   * { box-sizing: border-box; }
   body {
@@ -43,6 +45,11 @@
   }
   ol.steps strong { display: block; }
   .note { color: var(--muted); font-size: 15px; margin: 0; }
+  /* 쿠팡 파트너스 대가성 문구: 게시물 최상단에, 본문과 구별되게(2026-11-24 최종승인 반려 사유) */
+  .disclosure-top {
+    margin: 0 0 16px; padding: 14px 16px; border: 2px solid var(--notice-line); border-radius: 12px;
+    background: var(--notice-bg); color: var(--notice-text); font-size: 19px; font-weight: 700; line-height: 1.5;
+  }
   .disclosure { color: var(--muted); font-size: 14px; margin: 24px 4px 0; }
   .picks-section { margin-top: 8px; }
   ul.picks { list-style: none; padding: 0; margin: 0; }
@@ -67,6 +74,7 @@
 </head>
 <body>
 <main>
+  <p class="disclosure-top">이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.</p>
   <header>
     <img src="hyojason-icon.png" alt="효자손 아이콘">
     <h1>효자손 by 미엘룬</h1>
@@ -84,7 +92,7 @@
     </ol>
   </section>
 
-  <p class="disclosure">이 포스팅은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.</p>
+  <p class="disclosure">이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.</p>
   <section aria-labelledby="picks" class="picks-section">
     <h2 id="picks">효자손이 찾아 드린 물건</h2>
     <ul class="picks">
