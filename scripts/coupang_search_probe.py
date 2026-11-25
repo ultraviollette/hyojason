@@ -34,7 +34,8 @@ KNOWN_TOP = {"rCode", "rMessage", "data"}
 KNOWN_DATA = {"landingUrl", "productData"}
 KNOWN_PRODUCT = {"rank", "productName", "productPrice", "isRocket", "isFreeShipping", "productUrl",
                  "productId", "productImage", "categoryName"}
-PRODUCT_FIELDS = ("rank", "productName", "productPrice", "isRocket", "isFreeShipping", "productUrl")
+PRODUCT_FIELDS = ("rank", "productId", "productName", "productPrice", "isRocket", "isFreeShipping", "productUrl",
+                  "productImage")
 
 
 def authorization(method: str, path: str, query: str, access_key: str, secret_key: str) -> str:
