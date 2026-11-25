@@ -3,7 +3,8 @@
 도구:
   resolve_client / get_client_profile / save_client_profile(정해진 필드만, 저장·수정 겸용)
   make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
-  search_products          provider 구조: 쿠팡 파트너스 → 네이버 (키 있는 것만). 없으면 웹 검색 안내
+  search_products          provider 구조: 네이버 (키 있을 때만, 2026-07-31 종료). 없으면 웹 검색 안내
+  coupang_search           쿠팡 파트너스 검색 → 같은 상품(pageKey) 묶음 + 답 규칙 (주로 사는 곳에 쿠팡이 있는 분만)
   check_product            사용자가 보낸 링크 하나를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
   check_candidates         웹 검색 후보 최대 3개를 동시에 읽고 낼지(show)·붙일 말(say)을 정함
   record_item              찾아 드린(found)·고르신(chosen) 물건 기록 (칸·50건 상한을 코드로 강제)
@@ -41,6 +42,7 @@ def _view_response(cid: str | None) -> tuple[dict[str, Any] | None, int]:
 
 # 주로 사는 곳에 쿠팡이 있을 때 후보 답에 걸 규칙. 23e409b 실사용: "쿠팡도 좋고 네이버도 좋아"라고 답했는데
 # 그 뒤 후보에 쿠팡 검색어 줄이 없었다. 글 규칙("쿠팡이면 …")에만 맡기지 않고 도구 응답에 붙인다(ask_payment_note 와 같은 방식).
+# 쿠팡 파트너스 검색을 쓸 수 없을 때(키 또는 COUPANG_PARTNERS_VERIFIED 가 없음)의 옛 규칙. 쓸 수 있으면 COUPANG_SEARCH_FIRST_NOTE.
 COUPANG_FIRST_NOTE = ("주로 사는 곳에 쿠팡이 있다. 후보를 드리는 답에서는 make_search_links(정확한 상품명)의 coupang_query 로 "
                       "\"쿠팡은 제가 직접 볼 수 없어서 검색어를 드려요. 쿠팡 앱에서는 '<coupang_query>'로 검색해 보세요\" 줄을 "
                       "답 맨 앞에 두고, 다른 곳 후보를 이어서 보여 준다. '쿠팡에서는 못 찾았어요'라고 말하지 않는다.")
@@ -54,10 +56,17 @@ NAVER_FIRST_NOTE = ("주로 사는 곳에 네이버가 있다. 웹 검색 후보
                     "네이버를 직접 확인한 것이 아니므로 '네이버에서는 못 찾았어요'라고 말하지 않는다.")
 
 
+# 쿠팡 파트너스 검색이 켜져 있을 때(2026-11-25 사용자 결정). 검색어 규칙은 사용자 실사용 관찰:
+# "R.LUX", "알럭스" 같은 유통 관련 말을 더하면 무관한 상품이 섞였다.
+COUPANG_SEARCH_FIRST_NOTE = ("주로 사는 곳에 쿠팡이 있다. 후보를 찾을 때 웹 검색보다 먼저 coupang_search 를 부른다. "
+                             "검색어는 '브랜드 + 종류'만 쓰고 용량·색·유통 관련 말(정품, 공식, 유통사 이름)은 넣지 않는다. "
+                             "그 응답의 rules·next_step 을 따른다. 맞는 것이 하나도 없을 때만 웹 검색으로 간다.")
+
+
 def _place_rules(profile: dict[str, Any] | None) -> list[str]:
     rules = []
     if profiles.has_coupang(profile):
-        rules.append(COUPANG_FIRST_NOTE)
+        rules.append(COUPANG_SEARCH_FIRST_NOTE if coupang_partners.is_enabled() else COUPANG_FIRST_NOTE)
     if profiles.has_naver(profile):
         rules.append(NAVER_FIRST_NOTE)
     return rules
@@ -146,6 +155,8 @@ def record_item(client_id: str, status: str, name: str, brand: str = "", options
     seller: 판매처 이름. seen_price_krw: 그때 본 실제 판매가(원, 줄 그어진 정가가 아님). 적혀 있던 경우만, 모르면 비운다.
     url: 답에 링크로 드린 상품 페이지 주소(도구·검색 결과가 준 그대로). 검색 결과 페이지 주소는 넣지 않는다.
     크라우드펀딩(와디즈·텀블벅) 주소는 거절된다(후보가 아니다).
+    쿠팡 파트너스 주소(link.coupang.com)도 거절된다(약관상 저장 금지). 쿠팡 상품은 url·seen_price_krw 없이,
+    name 에는 사용자가 말한 종류, seller="쿠팡"으로 남긴다. 쿠팡에서 받은 상품 이름·가격은 넣지 않는다.
     match: found 일 때 반드시 채운다. "same" = 찾던 그 물건으로 드림(브랜드·제품명이 확인된 경우),
     "similar" = "똑같은 건 못 찾았고 비슷한 것"·"닮은 제품"으로 드림(브랜드를 모르는 사진이면 항상 similar).
     결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
@@ -174,14 +185,11 @@ async def _naver_provider(query: str, max_results: int, sort: str) -> dict[str, 
     return {"items": await naver.search(query, max_results=max_results, sort=sort), "error": None}
 
 
-async def _partners_provider(query: str, max_results: int, sort: str) -> dict[str, Any]:
-    return await coupang_partners.search(query, max_results=max_results)
-
-
 # (이름, 키가 있는지, 검색 함수). 키가 있는 provider 만 순서대로 시도한다. 키 없는 provider 는 요청하지 않는다.
 # 쿠팡 임시 스크레이퍼(coupang_scrape)는 키 없이 쿠팡에 자동 요청을 보내고 매번 403 이라 기본 경로에서 뺐다.
+# 쿠팡 파트너스는 여기서 뺐다(2026-11-25): 여기 두면 쿠팡을 쓰지 않는 분에게도 쿠팡 결과가 나가고 호출 한도도 두 번 쓴다.
+# 쿠팡은 주로 사는 곳에 쿠팡이 있는 분에게만 coupang_search 로 찾는다.
 SEARCH_PROVIDERS = (
-    ("coupang_partners", coupang_partners.is_enabled, _partners_provider),  # 키 + COUPANG_PARTNERS_VERIFIED=1
     ("naver_shopping", naver.has_credentials, _naver_provider),            # 2026-07-31 종료된 API (naver.py 참고)
 )
 
@@ -190,8 +198,7 @@ SEARCH_PROVIDERS = (
 async def search_products(query: str, max_results: int = 20, sort: str = "sim") -> dict[str, Any]:
     """상품을 찾는다. sort: sim(정확도) | asc(가격 낮은순) | dsc | date (네이버에만 적용).
     반환 items[].url을 check_product(product_url=…)에 넘길 것.
-    provider: 쿠팡 파트너스(키 + COUPANG_PARTNERS_VERIFIED=1 일 때. 미검증이라 기본은 꺼짐) → 네이버(키 있을 때).
-    affiliate=true 인 결과(쿠팡 파트너스 링크)를 보여 줄 때는 disclosure 문구를 반드시 함께 보낸다.
+    provider: 네이버(키 있을 때). 쿠팡은 여기서 찾지 않는다(coupang_search).
     실제 결과가 없으면 items=[] 와 fallback="web_search" 를 돌려준다. 그때는 SKILL 3-b(웹 검색 후보)로 간다.
     """
     tried = []
@@ -204,10 +211,7 @@ async def search_products(query: str, max_results: int = 20, sort: str = "sim") 
             r = {"items": [], "error": f"exception:{type(e).__name__}"}
         items = [x for x in r["items"] if x.get("source") != "mock"]  # 가짜 예시 상품은 절대 내보내지 않는다
         if items:
-            out = {"query": query, "count": len(items), "items": items, "provider": name}
-            if any(x.get("affiliate") for x in items):
-                out["disclosure"] = coupang_partners.DISCLOSURE
-            return out
+            return {"query": query, "count": len(items), "items": items, "provider": name}
         tried.append({"provider": name, "error": r.get("error") or "no_results"})
     return {"query": query, "count": 0, "items": [], "fallback": "web_search", "next_step": NO_RESULT_NEXT_STEP,
             "tried": tried}
@@ -218,6 +222,79 @@ NO_RESULT_NEXT_STEP = (
     "상품 페이지만 최대 3개(검색 결과·블로그·광고·쿠팡 링크 제외), 후보마다 검색 결과에서 확인된 사실로 한 줄, "
     "가격·재고·도착일은 보인 것만 말하고 '링크에서 꼭 확인하세요'. 하나도 못 찾았을 때만 못 찾았다고 말한다."
 )
+
+
+# ---------- 쿠팡 파트너스 검색 ----------
+
+# 답 규칙(사용자 결정, 2026-11-25). 글 규칙만으로는 잘 안 지켜져 도구 응답에 싣는다(ask_payment_note 와 같은 방식).
+COUPANG_RULES = [
+    "답의 맨 첫 줄은 disclosure 문장을 글자 그대로 쓴다. 다른 어떤 말보다 앞에 두고, 조건을 붙이거나 줄이지 않는다.",
+    "거르기는 상품 name 으로 한다. 브랜드를 말한 요청이면 name 에 그 브랜드가 없는 상품은 버린다. 말하지 않은 세트 상품은 버린다. "
+    "향·라인 이름이 다르면 다른 제품이다(예: '버베인 아그륌', '시트러스 버베나'는 '버베나'와 다른 향).",
+    "용량·색 같은 조건은 name 에 적혀 있을 때만 맞다고 말한다. name 에 없으면 '용량은 들어가서 골라 주세요'처럼 말한다.",
+    "브랜드를 짚어 말한 물건(화장품 등)은 값보다 유통 경로가 먼저다. is_rocket 인 상품을 앞에 두고, 대표 줄이 로켓이 아니고 "
+    "rocket_option 이 있으면 rocket_option(이름·가격·주소)을 고른다. 로켓이 아닌 후보에는 '판매자와 배송을 들어가서 확인해 주세요'를 붙인다. "
+    "'공식', '정품', 유통사 이름을 확인한 것처럼 말하지 않는다. 물으시면 '공식 유통인지는 제가 확인하지 못했어요'.",
+    "브랜드가 중요하지 않은 물건은 조건에 맞는 것 중 싼 순서로 둔다.",
+    "후보는 최대 3개, 상품마다 '제품 이름 · 옵션 · 가격' 한 줄. 가격은 '지금 약 19,000원, 들어가시면 달라질 수 있어요'처럼 "
+    "확정하지 않는다. price_varies 가 true 면 '약 19,000원부터, 옵션에 따라 달라요'로 말한다.",
+    "is_rocket 이면 '로켓배송'이라고만 하고 배송비는 단정하지 않는다. '무료배송'은 is_free_shipping 이 true 일 때만 말한다. "
+    "둘 다 아니면 '배송비가 더 붙을 수 있어요'.",
+    "링크 줄은 'N번 쿠팡: url' 로 쓰고 url 은 글자 하나 바꾸지 않는다(카카오에서 '쿠팡에서 보기' 버튼이 된다). "
+    "쿠팡 링크에는 check_candidates 를 부르지 않는다.",
+    "record_item 에는 쿠팡에서 받은 이름·가격·링크를 넣지 않는다. name 은 사용자가 말한 종류, brand·options 는 사용자가 말한 것, "
+    "seller='쿠팡', url·seen_price_krw 는 비운다. 쿠팡 기록은 다음에 다시 물으시면 다시 검색한다.",
+    "맞는 상품이 하나도 없으면 웹 검색(SKILL 3-b)으로 간다. 그 답은 '쿠팡에서는 못 찾았어요'로 시작하고 쿠팡 검색어 줄은 드리지 않는다.",
+]
+COUPANG_EMPTY_NEXT = ("쿠팡에서 찾아봤는데 상품이 없다. 웹 검색(SKILL 3-b)으로 찾고, 답은 '쿠팡에서는 못 찾았어요'로 시작한다. "
+                      "쿠팡 검색어 줄은 드리지 않는다. 쿠팡 링크가 없으면 대가성 문구도 넣지 않는다.")
+# 사용 불가(키·스위치 없음, 한도, 시간 초과, 오류)면 지금 흐름 그대로. 사용자에게는 말하지 않는다.
+COUPANG_UNAVAILABLE_NEXT = ("지금은 쓸 수 없다. 이 일은 사용자에게 말하지 않는다. 지금까지의 흐름 그대로 한다: "
+                            + COUPANG_FIRST_NOTE)
+
+
+def _group_products(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """같은 pageKey(같은 상품, itemId 가 다른 옵션 줄)를 한 상품으로 묶는다. 순서는 처음 나온 줄 순서.
+    대표 값(이름·로켓·무료배송·주소)은 가장 싼 줄 것이다. 링크가 그 줄이라 설명과 링크가 맞는다.
+    옵션 글자가 이름에 있는지는 추정하지 않는다("…-200ml-가든화이트"처럼 틀리는 이름이 있다). 에이전트가 name 을 읽는다."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        groups.setdefault(r["page_key"], []).append(r)
+    out = []
+    for g in groups.values():
+        cheapest = min(g, key=lambda r: r["price_krw"])          # 값이 같으면 앞 줄
+        prices = [r["price_krw"] for r in g]
+        p = {"name": cheapest["name"], "price_min_krw": min(prices), "price_max_krw": max(prices),
+             "price_varies": len(set(prices)) > 1, "row_count": len(g), "is_rocket": cheapest["is_rocket"],
+             "is_free_shipping": cheapest["is_free_shipping"], "url": cheapest["url"]}
+        rockets = [r for r in g if r["is_rocket"]]
+        if not cheapest["is_rocket"] and rockets:
+            ro = min(rockets, key=lambda r: r["price_krw"])
+            p["rocket_option"] = {"name": ro["name"], "price_krw": ro["price_krw"],
+                                  "is_free_shipping": ro["is_free_shipping"], "url": ro["url"]}
+        out.append(p)
+    return out
+
+
+@mcp.tool()
+async def coupang_search(keyword: str) -> dict[str, Any]:
+    """쿠팡 파트너스 검색. place_rules 가 coupang_search 를 먼저 부르라고 할 때만 쓴다(주로 사는 곳에 쿠팡이 있는 분).
+    keyword 는 '브랜드 + 종류'만(예: '록시땅 핸드크림'). 용량·색·유통 관련 말(정품, 공식, 유통사 이름)은 넣지 않는다.
+    반환 status: "ok"(products 있음, disclosure·rules 를 따른다) | "empty"(찾아봤는데 없음, next_step) |
+    "unavailable"(지금 쓸 수 없음, next_step. 사용자에게 말하지 않는다).
+    products[]: 같은 상품의 옵션 줄을 묶은 것. name, price_min_krw~price_max_krw, price_varies, row_count,
+    is_rocket, is_free_shipping, url(가장 싼 줄, 글자 그대로 쓴다), rocket_option(가장 싼 줄이 로켓이 아니고 로켓 줄이 있을 때).
+    가격은 배송비를 뺀 값이다. 판매자·품절·해외배송 정보는 없다."""
+    kw = _SPACES.sub(" ", keyword or "").strip()
+    if not kw:
+        return {"status": "unavailable", "products": [], "next_step": COUPANG_UNAVAILABLE_NEXT}
+    r = await coupang_partners.search(kw)
+    if r["status"] == "unavailable":
+        return {"status": "unavailable", "products": [], "next_step": COUPANG_UNAVAILABLE_NEXT}
+    if r["status"] == "empty":
+        return {"status": "empty", "keyword": kw, "products": [], "next_step": COUPANG_EMPTY_NEXT}
+    return {"status": "ok", "keyword": kw, "products": _group_products(r["rows"]),
+            "disclosure": coupang_partners.DISCLOSURE, "rules": COUPANG_RULES}
 
 
 _SPACES = re.compile(r"\s+")

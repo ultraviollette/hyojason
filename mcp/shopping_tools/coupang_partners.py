@@ -1,15 +1,13 @@
-"""미검증: 공식 문서 대조 전까지 사용 금지.
+"""쿠팡 파트너스 Open API 상품 검색 (coupang_search 도구가 쓴다).
 
-쿠팡 파트너스 Open API 상품 검색 (승인 후 쓸 자리). 이 파일은 공식 문서를 읽지 못한 채 기억으로 짰다.
-파트너스 콘솔의 API 문서와 대조해 고치기 전까지는 키가 있어도 호출하지 않는다.
-- 호출 조건: COUPANG_ACCESS_KEY, COUPANG_SECRET_KEY 가 둘 다 있고, COUPANG_PARTNERS_VERIFIED=1 일 때만.
-  COUPANG_PARTNERS_VERIFIED 는 공식 문서와 대조를 마친 뒤에만 1 로 둔다.
-
-⚠️ 확인 필요: 아래 엔드포인트·서명 형식·응답 필드·호출 제한·대가성 문구는 공식 문서로 확인하지 못했다
-   (partners.coupang.com, developers.coupang.com 이 자동 접근에 403). 작성자의 사전 지식 기준이다.
-   키를 받은 뒤 파트너스 콘솔의 Open API 문서와 이 파일 맨 위 상수들을 대조할 것.
-- 저장 금지: 이 API 에서 받은 데이터는 약관상 저장하면 안 된다(사용자 확인 사항, 2026-11-20).
-  켜기 전에 profiles._clean_url 주석대로 record_item 의 url·seen_price_krw 에 들어가지 않게 막을 것.
+- 호출 조건: COUPANG_ACCESS_KEY, COUPANG_SECRET_KEY 가 둘 다 있고 COUPANG_PARTNERS_VERIFIED=1 일 때만.
+  하나라도 없으면 요청하지 않고 "사용 불가"를 돌려준다(예외를 내지 않는다).
+- 경로·서명·응답 칸은 2026-11-25 사용자가 scripts/coupang_search_probe.py 로 실제 응답을 보고 확인했다:
+  v1 경로 HTTP 200 rCode "0", 상품 칸은 rank, productName, productPrice, isRocket, isFreeShipping, productUrl, keyword.
+  categoryName·판매자·품절·해외배송·옵션 칸은 없다. productPrice 는 19000.0 처럼 소수로 올 때가 있고 배송비를 뺀 값이다.
+- 호출 제한: 문서상 분당 50회. 여유를 두고 분당 30회에서 멈춘다(사용자 결정).
+- 저장 금지: 이 API 에서 받은 데이터는 약관상 저장·복제하면 안 된다. profiles.record_item 이 link.coupang.com 주소를 거절한다.
+- 로그(stderr)에는 결과 종류와 개수만 남긴다. 키·서명·검색어는 남기지 않는다.
 """
 from __future__ import annotations
 
@@ -17,23 +15,31 @@ import hashlib
 import hmac
 import logging
 import os
+import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
-log = logging.getLogger(__name__)
+# stdio MCP 라 stdout 은 프로토콜이 쓴다. 로그는 stderr 로만(check_candidates 개수 로그와 같은 방식).
+log = logging.getLogger("hyojason.coupang_search")
+if not log.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
-# ---- 확인 필요: 공식 문서와 대조할 값들 ----
 HOST = "https://api-gateway.coupang.com"
-SEARCH_PATH = "/v2/providers/affiliate_open_api/apis/openapi/v1/products/search"
-MAX_LIMIT = 10                    # 검색 1회 최대 상품 수
-SEARCH_PER_HOUR = 10              # 검색 호출 제한(시간당). 넘으면 호출하지 않고 다음 provider 로 넘긴다
-DISCLOSURE = "이 포스팅은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
-# --------------------------------------------
+SEARCH_PATH = "/v2/providers/affiliate_open_api/apis/openapi/v1/products/search"   # 11/25 실제 응답으로 확인
+LIMIT = 10                        # 검색 1회 상품 수
+SEARCH_PER_MINUTE = 30            # 문서상 분당 50회보다 낮게(사용자 결정)
+TIMEOUT_S = 5                     # 넘으면 사용 불가로 보고 웹 검색으로 간다
+# 쿠팡 파트너스 대가성 문구(사용자가 정한 문장). 카카오 브릿지(kakao-bridge-vps/server.py)의 DISCLOSURE 와 같아야 한다.
+DISCLOSURE = "이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
 
 _calls: deque[float] = deque()
 
@@ -43,7 +49,7 @@ def has_credentials() -> bool:
 
 
 def is_verified() -> bool:
-    """공식 문서 대조를 마쳤다고 사람이 표시했는지. 미검증 코드는 키가 있어도 쓰지 않는다."""
+    """사람이 켜 둔 스위치. 1 이 아니면 키가 있어도 쓰지 않는다."""
     return os.environ.get("COUPANG_PARTNERS_VERIFIED") == "1"
 
 
@@ -57,7 +63,8 @@ def signed_date(now: datetime | None = None) -> str:
 
 def authorization(method: str, path: str, query: str, access_key: str, secret_key: str,
                   now: datetime | None = None) -> str:
-    """HMAC-SHA256 서명 헤더. 서명 대상 = signed-date + method + path + query('?' 없이). (확인 필요)"""
+    """HMAC-SHA256 서명 헤더. 서명 대상 = signed-date + method + path + query('?' 없이).
+    이 형식으로 실제 호출이 200 을 받았다(11/25, 시험 스크립트)."""
     dt = signed_date(now)
     message = f"{dt}{method}{path}{query}"
     signature = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -65,59 +72,83 @@ def authorization(method: str, path: str, query: str, access_key: str, secret_ke
 
 
 def _rate_limited(now: float) -> bool:
-    while _calls and now - _calls[0] >= 3600:
+    while _calls and now - _calls[0] >= 60:
         _calls.popleft()
-    return len(_calls) >= SEARCH_PER_HOUR
+    return len(_calls) >= SEARCH_PER_MINUTE
 
 
-def _normalize(p: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "product_id": str(p.get("productId", "")),
-        "title": str(p.get("productName", "")),
-        "price_krw": int(p.get("productPrice") or 0),
-        "mall": "쿠팡",
-        "brand": "",
-        "url": p.get("productUrl", ""),
-        "image": p.get("productImage", ""),
-        "product_type": "일반 단품",
-        "overseas_hint": False,
-        "rocket": bool(p.get("isRocket")),
-        "free_shipping": bool(p.get("isFreeShipping")),
-        "category": p.get("categoryName", ""),
-        "affiliate": True,
-        "source": "coupang_partners",
-    }
+def price_krw(v: Any) -> int | None:
+    """19000.0 → 19000. 숫자로 읽히지 않거나 0 이하면 None."""
+    try:
+        n = round(float(v))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
-async def search(query: str, max_results: int = 10, *, transport: httpx.AsyncBaseTransport | None = None
-                 ) -> dict[str, Any]:
-    """반환: {"items": [...], "error": None | "no_credentials" | "rate_limited" | "http_<code>" | "api_<rCode>" | ...}"""
+def page_key(url: str) -> str:
+    """productUrl 의 pageKey(같은 상품). 없으면 주소 그대로를 묶음 키로 쓴다."""
+    try:
+        return parse_qs(urlsplit(url).query).get("pageKey", [""])[0] or url
+    except ValueError:
+        return url
+
+
+def _row(p: dict[str, Any]) -> dict[str, Any] | None:
+    url = p.get("productUrl")
+    name = p.get("productName")
+    price = price_krw(p.get("productPrice"))
+    if not isinstance(url, str) or not url or not isinstance(name, str) or not name.strip() or price is None:
+        return None
+    return {"rank": p.get("rank"), "name": name.strip(), "price_krw": price, "is_rocket": p.get("isRocket") is True,
+            "is_free_shipping": p.get("isFreeShipping") is True, "url": url, "page_key": page_key(url)}
+
+
+def _unavailable(reason: str) -> dict[str, Any]:
+    log.warning("path=coupang_search outcome=unavailable reason=%s", reason)
+    return {"status": "unavailable", "rows": [], "reason": reason}
+
+
+async def search(keyword: str, *, transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
+    """반환: {"status": "ok" | "empty" | "unavailable", "rows": [...], "reason": 사용 불가 이유(로그용)}.
+    ok: 상품 줄이 있음. empty: rCode 0 인데 0건(찾아봤는데 없음). unavailable: 키·스위치 없음, 한도, 시간 초과,
+    네트워크 예외, HTTP 오류, rCode≠0, 형식 오류. 예외를 내지 않는다."""
     if not has_credentials():
-        return {"items": [], "error": "no_credentials"}  # 키 없이는 요청하지 않는다
+        return _unavailable("no_credentials")
     if not is_verified():
-        return {"items": [], "error": "unverified"}      # 미검증: 공식 문서 대조 전까지 사용 금지
+        return _unavailable("not_verified")
     now = time.monotonic()
     if _rate_limited(now):
-        log.warning("coupang partners search skipped: hourly limit %d reached", SEARCH_PER_HOUR)
-        return {"items": [], "error": "rate_limited"}
+        return _unavailable("rate_limited")
 
-    query_string = urlencode({"keyword": query, "limit": min(max_results, MAX_LIMIT)})
+    query_string = urlencode({"keyword": keyword, "limit": LIMIT})
     auth = authorization("GET", SEARCH_PATH, query_string,
                          os.environ["COUPANG_ACCESS_KEY"], os.environ["COUPANG_SECRET_KEY"])
     _calls.append(now)
     try:
-        async with httpx.AsyncClient(timeout=10, transport=transport) as c:
+        async with httpx.AsyncClient(timeout=TIMEOUT_S, transport=transport) as c:
             r = await c.get(f"{HOST}{SEARCH_PATH}?{query_string}",
                             headers={"Authorization": auth, "Content-Type": "application/json;charset=UTF-8"})
-    except httpx.HTTPError as e:
-        log.warning("coupang partners search failed: %s", type(e).__name__)
-        return {"items": [], "error": f"request_failed:{type(e).__name__}"}
+    except httpx.TimeoutException:
+        return _unavailable("timeout")
+    except Exception as e:  # 네트워크 예외 등. 메시지에는 주소(검색어)가 담길 수 있어 이름만 남긴다
+        return _unavailable(f"request_failed:{type(e).__name__}")
     if r.status_code != 200:
-        log.warning("coupang partners search http %d", r.status_code)
-        return {"items": [], "error": f"http_{r.status_code}"}
-    data = r.json()
-    if str(data.get("rCode", "0")) != "0":
-        log.warning("coupang partners search rCode %s", data.get("rCode"))
-        return {"items": [], "error": f"api_{data.get('rCode')}"}
-    products = ((data.get("data") or {}).get("productData") or [])[:max_results]
-    return {"items": [_normalize(p) for p in products], "error": None}
+        return _unavailable(f"http_{r.status_code}")
+    try:
+        data = r.json()
+    except ValueError:
+        return _unavailable("bad_json")
+    if not isinstance(data, dict):
+        return _unavailable("bad_shape")
+    if str(data.get("rCode")) != "0":
+        return _unavailable(f"api_{str(data.get('rCode'))[:10]}")
+    products = (data.get("data") or {}).get("productData") if isinstance(data.get("data"), dict) else None
+    if products is None:
+        products = []
+    if not isinstance(products, list):
+        return _unavailable("bad_shape")
+    rows = [x for x in (_row(p) for p in products if isinstance(p, dict)) if x]
+    status = "ok" if rows else "empty"
+    log.info("path=coupang_search outcome=%s rows=%d", status, len(rows))
+    return {"status": status, "rows": rows, "reason": None}

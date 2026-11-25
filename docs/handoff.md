@@ -1,4 +1,4 @@
-# 효자손 인수인계 (2026-11-20 기준, c79139a·후속 결정 반영)
+# 효자손 인수인계 (2026-11-25 기준, 쿠팡 파트너스 검색 반영)
 
 이어서 작업할 사람(또는 에이전트)을 위한 메모다. 구조 설명은 [architecture.md](architecture.md)에 있고, 여기에는 11/19~20 실사용 시험을 반영하며 바뀐 것만 적는다.
 실제 프로필 내용·시크릿·사용자 ID 는 이 문서에 적지 않는다.
@@ -22,6 +22,8 @@
 | 8316893 | 확인 2번 상한(`attempt`), `drop_reason`, 개수 로그 |
 | 7b50a5e | 작업 규칙에 push |
 | (이번 커밋) | 페이지 읽기 상한 15 → 8초, `say` 를 한 줄로(읽은 것·못 읽은 것 따로), 검색 결과 배송비를 `candidates[].shipping_fee_krw` 로 받기 |
+| dd285c8 | 쿠팡 파트너스 응답 모양 확인용 시험 스크립트(`scripts/coupang_search_probe.py`, 효자손 코드와 연결 안 함) |
+| (이번 커밋) | 쿠팡 파트너스 검색 `coupang_search`(아래 2-5), record_item 의 쿠팡 주소 거절, 브릿지 대가성 문구 보장 |
 | c79139a | f3f5b0c 시험 반영: 후보 페이지 확인(`check_candidates`), 기록의 `match`(같은 물건/비슷한 것), 해요체·내부 용어·군말 금지(`confirm_note`), SKILL description |
 
 ## 2. 새로 생긴 구조
@@ -114,7 +116,7 @@ callback `outcome` 값:
 - 최근 50건까지 보관한다. 넘으면 오래된 found 부터 지우고, chosen 은 끝까지 남긴다.
 - 같은 날·같은 브랜드·이름·옵션이면 한 줄로 합친다. found 를 chosen 으로 남기면 그 줄이 chosen 으로 바뀐다. 빈 값은 옛 값을 지킨다.
 - 도구가 돌려주는 items 는 chosen 전부와 최근 found 10건이다(`items_omitted` 로 뺀 건수를 알림).
-- 쿠팡 파트너스 API 데이터는 약관상 저장 금지다. 지금은 그 API 가 꺼져 있다. 켜기 전에 `url`·`seen_price_krw` 로 들어오지 않게 막아야 한다(`_clean_url` 주석).
+- 쿠팡 파트너스 API 데이터는 약관상 저장·복제 금지다. `record_item` 은 호스트가 `link.coupang.com` 인 주소(/re/·/a/ 모두)를 받으면 저장하지 않고 거절한다(`COUPANG_RECORD_ERROR`: "name 에는 사용자가 말한 종류를, seller 에는 쿠팡을 넣어 다시 기록"). 거절은 칸 검사에서 나므로 `asked_on` 이 채워지지 않고, 결제 질문은 재호출 때 한 번 나간다. 쿠팡 기록에는 url 이 없어 1-d(재검색 없이 돌려주기) 대상이 아니다.
 
 **payment**
 
@@ -130,10 +132,11 @@ callback `outcome` 값:
 | 이름 | 어디에 | 언제 |
 |---|---|---|
 | `ask_payment` / `ask_payment_note` | `record_item` | 결제 방식을 모르고 물은 적도 없을 때 found 첫 기록에서 한 번만. 노트는 "후보와 링크를 다 쓰고 맨 끝에 결제 질문 한 줄" |
-| `place_rules` | `resolve_client`, `get_client_profile`, `save_client_profile`, `record_item(found)` | `places` 에 쿠팡이 있으면 `COUPANG_FIRST_NOTE`(쿠팡 검색어 줄을 답 맨 앞에). 네이버가 있으면 `NAVER_FIRST_NOTE`(웹 검색 후보 중 smartstore.naver.com·brand.naver.com 상품 페이지를 앞에). 둘 다면 쿠팡이 먼저. 해당 없으면 칸 자체가 없음 |
+| `place_rules` | `resolve_client`, `get_client_profile`, `save_client_profile`, `record_item(found)` | `places` 에 쿠팡이 있으면: 쿠팡 검색이 켜져 있으면(키 둘 + `COUPANG_PARTNERS_VERIFIED=1`) `COUPANG_SEARCH_FIRST_NOTE`(coupang_search 먼저), 아니면 옛 `COUPANG_FIRST_NOTE`(쿠팡 검색어 줄을 답 맨 앞에). 네이버가 있으면 `NAVER_FIRST_NOTE`(웹 검색 후보 중 smartstore.naver.com·brand.naver.com 상품 페이지를 앞에). 둘 다면 쿠팡이 먼저. 해당 없으면 칸 자체가 없음 |
 | `items[].confirm_phrase` | 프로필 보기(파일에는 저장 안 함) | chosen → "지난번 ○○ 맞으세요?" / found+same → "지난번에 찾아 드렸던 ○○ 말씀이세요?" / found+similar → "지난번에 비슷한 걸로 ○○ 등 N개 찾아 드렸어요. 그중에서 고르실래요, 다시 찾아볼까요?" / found+""(옛 기록) → 같은 문장에서 "비슷한 걸로"만 뺌. N 은 같은 날·같은 match 의 found 묶음, ○○ 는 묶음에서 먼저 기록된 것. 1개면 "그걸로 보실래요, 다시 찾아볼까요?" |
 | `confirm_note` | 프로필에 items 가 있을 때 `resolve_client` 등 `place_rules` 와 같은 응답 | 확인 질문은 confirm_phrase 로 바로 시작, 사진 설명·기록 이야기 금지, 내부 용어 금지, 해요체만 |
 | `check_candidates` 의 `results[].show`·`say`, `note` | `check_candidates` | 아래 2-4 |
+| `disclosure`, `rules`(`COUPANG_RULES`), `next_step`(`COUPANG_EMPTY_NEXT`·`COUPANG_UNAVAILABLE_NEXT`) | `coupang_search` | 아래 2-5 |
 
 - `save_client_profile` 이 `saved=false` 를 주면 "기억해 둘게요"라고 말하지 않게 했다(도구 설명과 SOUL·SKILL).
 - 네이버 쇼핑 검색 API 는 2026-07-31 에 종료됐다. 경로는 지우지 않고 주석만 달았다.
@@ -158,6 +161,48 @@ callback `outcome` 값:
 - 배송비(`_shipping_fee`): "배송비 X" 값이 하나로 정해질 때만. 여러 값(지역·옵션별)이면 모름.
 - `check_product` 는 1-b(사용자가 보낸 링크)용으로 남겼다. 반환에 `shipping_fee_krw`·`verdict`·`say` 가 더해졌다. `passed` 의 뜻은 그대로다.
 - `gates._OVERSEAS` 에 "구매대행"이 더해졌다.
+
+### 2-5. 쿠팡 파트너스 검색 (`coupang_search`, 2026-11-25)
+
+**언제**: 프로필 `payment.places` 에 쿠팡이 있는 분만. place_rules 가 알려 준다. 웹 검색보다 먼저 부르고, 맞는 것이 하나도 없을 때만 웹 검색으로 간다. 그 밖의 분은 지금 흐름 그대로다. `search_products` 에서는 쿠팡을 뺐다(쿠팡을 안 쓰는 분에게 쿠팡 결과가 나가지 않게, 호출 한도를 두 번 쓰지 않게).
+
+**호출** (`mcp/shopping_tools/coupang_partners.py`)
+- `GET /v2/providers/affiliate_open_api/apis/openapi/v1/products/search?keyword=…&limit=10`, HMAC 서명. 경로·서명은 11/25 시험 스크립트로 200 을 확인했다.
+- 분당 30회(문서 한도 50보다 낮게), 요청 시간 상한 5초.
+- 반환 `status`:
+  - `ok`: 상품이 있다.
+  - `empty`: rCode 0 인데 0건. 찾아봤는데 없는 것이다.
+  - `unavailable`: 키·스위치가 없거나, 한도·시간 초과·네트워크 예외·HTTP 오류·rCode≠0·형식 오류. 예외를 내지 않는다.
+- 로그(stderr): `path=coupang_search outcome=<ok|empty|unavailable> rows=<n>` / `reason=<이유>`. 키·서명·검색어는 남기지 않는다.
+
+**묶기** (`server._group_products`)
+- productUrl 의 `pageKey` 로 묶는다. pageKey 가 같고 itemId 가 다른 줄은 옵션 차이다. 순서는 처음 나온 줄 순서다.
+- 묶음 칸: `name`, `price_min_krw`·`price_max_krw`(정수, 19000.0 → 19000), `price_varies`, `row_count`, `is_rocket`, `is_free_shipping`, `url`.
+  - 대표 값(이름·로켓·무료배송·주소)은 가장 싼 줄 것이다. 값이 같으면 앞 줄이다.
+- `rocket_option`: 가장 싼 줄이 로켓이 아닌데 같은 묶음에 로켓 줄이 있을 때, 그중 가장 싼 줄의 `name`, `price_krw`, `is_free_shipping`, `url`.
+- 이름에 옵션 글자가 있는지는 추정하지 않는다("…-200ml-가든화이트" 같은 이름에서 틀린다). 에이전트가 name 을 읽는다.
+- url 은 한 글자도 바꾸지 않는다.
+
+**응답에 싣는 규칙** (`COUPANG_RULES`)
+- 맨 첫 줄은 disclosure("이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.").
+- name 으로 거르기(브랜드 없음·말하지 않은 세트·다른 향/라인 버림). 조건은 name 에 있을 때만 맞다고 말하고, 없으면 "들어가서 골라 주세요".
+- 고르는 순서(의뢰인 기준):
+  - 브랜드 상품: 로켓 먼저, `rocket_option` 을 고른다. 로켓이 아니면 "판매자와 배송을 들어가서 확인해 주세요". 공식·정품이라고 말하지 않는다.
+  - 그 밖: 조건에 맞는 것 중 싼 순서.
+- 가격·배송 문구:
+  - 가격: "지금 약 …원, 들어가시면 달라질 수 있어요". price_varies 면 "약 …원부터, 옵션에 따라 달라요".
+  - 배송: 로켓은 "로켓배송"만, 무료배송은 is_free_shipping 일 때만, 둘 다 아니면 "배송비가 더 붙을 수 있어요".
+- 링크·기록:
+  - 링크 줄은 `N번 쿠팡: url`. check_candidates 는 부르지 않는다(코드도 coupang.com 하위 주소에는 요청하지 않는다).
+  - record_item 에는 사용자가 말한 것 + seller="쿠팡"만 넣는다.
+- `empty` → "쿠팡에서는 못 찾았어요"로 시작하고 웹 검색, 쿠팡 검색어 줄 없음. `unavailable` → 옛 흐름 그대로(옛 COUPANG_FIRST_NOTE), 사용자에게 말하지 않음.
+
+**카카오 브릿지** (`kakao-bridge-vps/server.py`)
+- 버튼으로 나가는 링크(최대 3개)에 `link.coupang.com` 주소가 있으면, 본문에서 `DISCLOSURE` 문장을 모두 지우고 맨 첫 줄에 한 번 둔다. 링크만 온 답은 `DISCLOSURE` + `LINKS_ONLY_BODY` 로 나간다.
+- `DISCLOSURE` 는 브릿지와 `coupang_partners.py` 두 곳에 있다. 바꿀 때는 둘 다 바꾼다.
+- 본문 속 주소는 ASCII 글자까지만 주소로 본다. 주소 바로 뒤의 한글 조사가 주소에 섞이지 않는다.
+- 400자를 넘으면 나뉜다. 말풍선이 3개를 넘으면 가운데 조각이 빠지고, 카드 설명은 끝이 잘린다. 앞(첫 줄)은 남는다.
+- 카카오 공식 문서(answer_json_format)의 Button `webLinkUrl` 에는 길이 제한이 적혀 있지 않다(제한은 "URL"뿐). 실제 주소 길이로 열리는지는 실사용으로 본다.
 
 ## 3. 이번에 바뀐 프롬프트 규칙의 위치
 
@@ -188,6 +233,11 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 | (c79139a) 후보를 드리는 답에서 할 일 | record_item 의 `match` 필수, 배송비 say 를 가격 아래에 |
 | (c79139a) 대화 규칙 | 군말을 "확인 질문 앞 설명"까지, 해요체만, 내부 용어 금지 |
 
+| (11/25) description, 1-c 3·4·7, 1-d, 3, 3-b 3 | 쿠팡이 주로 사는 곳이면 coupang_search 먼저. 웹 검색의 coupang.com 주소만 제외. 쿠팡을 찾아봤는데 없으면 검색어 줄 대신 "쿠팡에서는 못 찾았어요" |
+| (11/25) 쿠팡 검색 (새 섹션) | coupang_search 사용법(status 셋, 거르기·순서·가격·배송·기록, 예시) |
+| (11/25) 후보를 드리는 답에서 할 일 | 쿠팡 기록 규칙, place_rules 의 쿠팡 규칙 둘, 답 맨 앞 줄은 대가성 문구, 끝 줄 순서에서 대가성 문구 뺌 |
+| (11/25) 링크 표기 규칙 | 대가성 문구는 맨 첫 줄(전에는 링크 줄 바로 위), `1번 쿠팡: url` |
+
 **SOUL.md** (`hermes/SOUL.md`)
 
 | 섹션 | 바뀐 규칙 |
@@ -201,12 +251,13 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 | (c79139a) 절대 규칙 | 해외배송 줄에 check_candidates show·say, 배송비, 못 읽은 후보 문장 |
 | (c79139a) 말투 | 해요체만, 군말 범위 넓힘, 내부 용어 금지 |
 | (c79139a) 클라이언트 프로필 | confirm_phrase 세 가지·첫 글자부터, record_item 의 match |
+| (11/25) 3번째 줄, 네가 하는 일 3, 클라이언트 프로필 place_rules | 웹 검색의 쿠팡 주소 제외, coupang_search 먼저, 쿠팡 규칙 둘 |
 
 ## 4. 테스트
 
 ```bash
-cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 44 passed
-cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
+cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 50 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 90 passed
 ```
 - 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
 - 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
@@ -230,6 +281,12 @@ cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
 - 네이버 쇼핑 검색 API 는 2026-07-31 에 종료됐다(네이버 개발자센터 공지, 사용자가 원문 확인).
 - 카카오 사진 메시지의 utterance 는 사진 주소다. 형태 로그로 확인했다: `starts_url=1 has_param_image=1`, 길이 196.
 - 카카오 콜백(`callbackUrl`)은 메시지마다 1회, 최대 5분 유효하다.
+- (11/25, 사용자가 시험 스크립트로 확인) 쿠팡 파트너스 검색:
+  - 응답: v1 경로, HTTP 200, rCode "0". 상품 칸은 rank, productName, productPrice, isRocket, isFreeShipping, productUrl, keyword 이고, categoryName·판매자·품절·해외배송·옵션 칸은 없다.
+  - 가격: productPrice 는 소수로 올 때가 있고 배송비를 뺀 값이다. 로켓·무료배송이 둘 다 아닌 상품 하나는 배송비 2,500원에 판매자가 해외 법인이었다.
+  - 주소: productUrl 은 `https://link.coupang.com/re/AFFSDP?…pageKey=…&itemId=…&vendorItemId=…` 이고 카카오 인앱 브라우저에서 열린다. 같은 상품이 여러 줄로 온다(pageKey 같음, itemId 다름).
+  - 검색어: "R.LUX"·"알럭스"를 더하면 결과가 나빠진다.
+  - 호출 제한: 문서상 분당 50회.
 
 ## 7. 아직 정해지지 않은 것
 - 후보 검증을 계속 둘지 끌지. 8316893 실사용: "록시땅 버베나 핸드크림" 한 건이 브릿지 기준 163초(전 약 120초)였는데, 얻은 것이 없었다(롯데온 품절은 "확인하지 못했어요", LF몰 해외직구·구매대행은 못 잡음). 상한을 8초로 줄인 뒤 다시 잰다.
@@ -239,6 +296,9 @@ cd mcp && uv run python -m pytest -q                            # MCP: 71 passed
 - LF몰 해외직구·구매대행을 못 잡은 원인(아래 9). 확인 필요.
 - (c79139a) 쇼핑몰별로 페이지를 실제로 읽을 수 있는지(롯데온·LF몰 등)는 확인하지 않았다(작업자는 쇼핑몰에 요청하지 않는다). 실사용 로그로 본다. 확인 필요.
 - (c79139a) "해외직구"·"품절"이 상품이 아니라 메뉴·추천 영역 글자에 있으면 잘못 걸릴 수 있다(본문 앞 6,000자를 통째로 본다). 확인 필요.
+
+- (11/25) 쿠팡 파트너스 productUrl 실제 길이와 그 길이의 버튼이 카카오에서 열리는지. 사용자가 실사용으로 확인한다. 확인 필요.
+- (11/25) 응답 규칙(거르기·로켓 우선·가격 표현)이 실사용에서 지켜지는지. 확인 필요.
 
 ## 8. 정해진 것 (2026-11-20)
 - 비슷한 것 묶음은 날짜로만 나눈다. 같은 날 다른 물건을 비슷한 것으로 또 찾아 드리면 한 묶음이 된다.

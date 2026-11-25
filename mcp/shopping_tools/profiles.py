@@ -10,6 +10,7 @@
 - items: 찾아 드린(found)·고르신(chosen) 물건. record_item 도구만 쓰고, 칸·개수(최근 50건)를 코드로 강제한다.
   실제 결제 여부는 알 수 없으므로 기록하지 않는다. url(상품 페이지 주소)은 선택 칸이고, 옛 기록에는 없다("").
   match(same | similar)는 찾던 물건 그대로인지 비슷한 것인지다. 옛 기록에는 없다("" 모름).
+  쿠팡 파트너스 주소(link.coupang.com)는 거절한다(약관상 저장 금지). 쿠팡 기록은 사용자가 말한 것 + seller=쿠팡 + 날짜뿐이다.
 - payment: 주로 사는 곳(places, 여러 곳. 옛 형식 place 한 줄도 읽는다)과 결제하는 사람(by: "" 모름 | self | family), 결제 방식을 물어본 날(asked_on).
   결제 질문은 평생 한 번만: record_item(found) 이 정하고 asked_on 을 채운다(스킬 글에 맡기지 않음).
   다른 사람에게 연락하는 칸은 없다.
@@ -305,6 +306,20 @@ def _clean_item(it: Any) -> dict[str, Any]:
             "url": _clean_url(it.get("url")), "match": match}
 
 
+COUPANG_PARTNERS_HOST = "link.coupang.com"
+COUPANG_RECORD_ERROR = ("쿠팡 상품은 주소·가격 없이, name 에는 사용자가 말한 종류를, seller 에는 쿠팡을 넣어 다시 기록해요 "
+                        "(쿠팡에서 받은 상품 이름·가격·링크는 남기지 않아요)")
+
+
+def is_coupang_partners_url(url: str) -> bool:
+    """쿠팡 파트너스 링크(link.coupang.com 의 모든 경로). 대문자·끝 점·user@host 에 속지 않게 hostname 으로 본다."""
+    try:
+        host = (urlsplit(url).hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    return host == COUPANG_PARTNERS_HOST
+
+
 def _is_blocked_url(url: str) -> bool:
     try:
         host = (urlsplit(url).hostname or "").rstrip(".")
@@ -317,9 +332,10 @@ def _clean_url(v: Any) -> str:
     """상품 페이지 주소(선택). 확인받은 물건을 다시 드릴 때 검색 없이 쓰려고 남긴다.
     크라우드펀딩 주소는 후보가 아니므로 기록하지 않는다(항목째 거절해서 펀딩 상품이 기록으로 남지 않게).
 
-    주의: 나중에 쿠팡 파트너스 API(coupang_partners.py)를 쓰게 되면, 그 API 에서 받은 데이터(상품 주소·가격 등)는
-    약관상 저장하면 안 된다(사용자 확인 사항, 2026-11-20). 지금은 그 API 가 꺼져 있어 해당 없다.
-    켜기 전에 search_products 의 affiliate=true 결과가 여기(url·seen_price_krw)에 들어오지 않게 막아야 한다."""
+    쿠팡 파트너스 주소(호스트 link.coupang.com, /re/·/a/ 모두)도 항목째 거절한다. 그 API 데이터(이름·가격·링크)는
+    약관상 저장·복제하면 안 된다. 주소만 비우고 저장하면 같은 호출의 name·seen_price_krw 에 API 값이 남을 수 있어서,
+    저장하지 않고 "사용자가 말한 종류 + seller=쿠팡"으로 다시 부르게 한다(사용자 결정, 2026-11-25).
+    거절은 _clean_item 에서 나므로 asked_on 은 채워지지 않고, 결제 질문은 재호출 때 한 번만 나간다."""
     url = _text(v, "url", limit=MAX_URL)
     if not url:
         return ""
@@ -327,6 +343,8 @@ def _clean_url(v: Any) -> str:
         raise ValueError("url 은 http(s) 로 시작하는 상품 페이지 주소여야 해요")
     if _is_blocked_url(url):
         raise ValueError("크라우드펀딩(와디즈·텀블벅) 상품은 후보가 아니라 기록하지 않아요")
+    if is_coupang_partners_url(url):
+        raise ValueError(COUPANG_RECORD_ERROR)
     return url
 
 

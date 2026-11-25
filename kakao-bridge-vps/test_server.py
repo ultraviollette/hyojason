@@ -826,3 +826,68 @@ def test_links_only_reply_gets_default_body_and_is_flagged(caplog) -> None:
         _run(h, steps)
     assert h.said("/cb/mom/1") == LINKS_ONLY_BODY == "아래 버튼을 눌러 열어 보세요."
     assert any("links_only" in r.getMessage() for r in caplog.records if "path=callback" in r.getMessage())
+
+
+# ---------- 쿠팡 파트너스 링크: 주소 그대로, 대가성 문구는 맨 첫 줄에 한 번 ----------
+from server import DISCLOSURE, LINKS_ONLY_BODY, is_links_only  # noqa: E402
+
+# 2026-11-25 사용자가 본 productUrl 모양을 흉내 낸 가짜 주소
+AFF = ("https://link.coupang.com/re/AFFSDP?lptag=AF0000000&subid=&pageKey=111&itemId=9001&vendorItemId=7001"
+       "&traceid=V0-000-0000&requestid=20261125000000&token=31850C%7CMIXED%7C1")
+AFF2 = AFF.replace("pageKey=111&itemId=9001", "pageKey=222&itemId=9101")
+LINE = "1) 록시땅 시어버터 핸드크림 · 30ml · 지금 약 19,000원, 들어가시면 달라질 수 있어요"
+
+
+def test_affsdp_url_reaches_button_unchanged_with_trailing_marks_and_markdown() -> None:
+    variants = [
+        f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: {AFF}",
+        f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: {AFF})",           # 닫는 괄호
+        f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: {AFF}.",           # 마침표
+        f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: ({AFF})",          # 괄호로 감쌈
+        f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: {AFF}에서 보세요",  # 한글 조사가 바로 붙음
+        f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: {AFF}로",
+        f"{DISCLOSURE}\n{LINE}\n[1번 쿠팡]({AFF})",          # 마크다운 링크
+    ]
+    for reply in variants:
+        wire = json.loads(json.dumps(kakao_reply_body(reply), ensure_ascii=False))  # 콜백 POST 본문 그대로
+        assert _buttons(wire) == [("1번 쿠팡에서 보기", AFF)], reply
+
+
+def test_disclosure_added_as_first_line_when_missing() -> None:
+    body = kakao_reply_body(f"{LINE}\n재고·도착일은 링크에서 확인하세요.\n1번 쿠팡: {AFF}")
+    text = "\n".join(_texts(body))
+    assert text.startswith(DISCLOSURE + "\n") and text.count(DISCLOSURE) == 1
+    assert LINE in text
+
+
+def test_disclosure_elsewhere_is_moved_to_the_top_once() -> None:
+    reply = f"{LINE}\n2) 다른 상품 · 약 24,000원\n{DISCLOSURE}\n1번 쿠팡: {AFF}\n2번 쿠팡: {AFF2}"
+    text = "\n".join(_texts(kakao_reply_body(reply)))
+    assert text.startswith(DISCLOSURE) and text.count(DISCLOSURE) == 1
+    assert not text.rstrip().endswith(DISCLOSURE)
+    already = kakao_reply_body(f"{DISCLOSURE}\n{LINE}\n1번 쿠팡: {AFF}")
+    assert _texts(already)[0].count(DISCLOSURE) == 1
+
+
+def test_links_only_reply_with_coupang_gets_disclosure_then_default_body() -> None:
+    for reply in (f"1번 쿠팡: {AFF}", f"{DISCLOSURE}\n1번 쿠팡: {AFF}"):
+        assert is_links_only(reply)
+        assert _texts(kakao_reply_body(reply)) == [f"{DISCLOSURE}\n\n{LINKS_ONLY_BODY}"]
+
+
+def test_no_disclosure_without_partners_link() -> None:
+    text = "\n".join(_texts(kakao_reply_body(f"{LINE}\n1번 11번가: https://www.11st.co.kr/products/1")))
+    assert DISCLOSURE not in text
+    # 웹 검색의 coupang.com 주소는 파트너스 링크가 아니다
+    assert DISCLOSURE not in "\n".join(_texts(kakao_reply_body("쿠팡: https://www.coupang.com/vp/products/1")))
+
+
+def test_long_coupang_reply_keeps_disclosure_first_line() -> None:
+    """400자를 넘겨 나뉠 때 잘리는 쪽은 가운데 조각(말풍선 3개 초과)과 카드 끝이다. 첫 줄은 남는다."""
+    long_body = "\n".join(f"{i}) 확인할 점이 있어요. 용량은 들어가서 골라 주세요." for i in range(60))
+    body = kakao_reply_body(f"{long_body}\n1번 쿠팡: {AFF}")
+    outputs = body["template"]["outputs"]
+    assert len(outputs) == 3
+    assert _texts(body)[0].startswith(DISCLOSURE + "\n")
+    assert len(outputs[-1]["textCard"]["description"]) <= 400
+    assert _buttons(body) == [("1번 쿠팡에서 보기", AFF)]

@@ -203,7 +203,9 @@ def kakao_text_body(text: str) -> dict[str, Any]:
 # Hermes 표기 규칙에 기대지 않고, 답변에서 http(s) URL 을 직접 찾아 버튼으로 옮긴다.
 
 _LINK_MD = re.compile(r"\[([^\]\n]{0,40})\]\((https?://[^\s)]+)\)")   # [라벨](url)
-_LINK_RAW = re.compile(r"<?(https?://[^\s<>\"']+)>?")
+# 주소는 ASCII 글자까지만 본다. 도구가 주는 상품 주소는 퍼센트 인코딩된 ASCII 라서, 주소 바로 뒤에 붙은
+# 한글 조사("…vendorItemId=7001에서")가 주소에 섞여 버튼 주소가 바뀌지 않게 한다.
+_LINK_RAW = re.compile(r"<?(https?://[^\s<>\"'\u0080-\U0010ffff]+)>?")
 _TRAIL = ".,;:!?)]}>'\"」』"
 _LEFTOVER_MAX = 14   # URL 을 뺀 뒤 이 길이 이하만 남은 줄("쿠팡:", "👉 1번 사러 가기:")은 지운다
 MAX_BUTTONS = 3
@@ -217,6 +219,23 @@ _SITES = (("coupang.com", "쿠팡"), ("naver.com", "네이버"), ("naver.me", "�
 BLOCKED_LINK_DOMAINS = ("wadiz.kr", "tumblbug.com")
 LINKS_ONLY_BODY = "아래 버튼을 눌러 열어 보세요."   # 답에 링크만 있고 본문이 비었을 때 카드 설명 칸에 넣는 기본 문구
 NO_LINK_MSG = "보내 드릴 수 있는 링크가 없어요. 사고 싶은 물건을 한 번 더 말씀해 주세요."
+# 쿠팡 파트너스 대가성 문구(사용자가 정한 문장). mcp/shopping_tools/coupang_partners.py 의 DISCLOSURE 와 같아야 한다.
+# 버튼으로 나가는 링크에 쿠팡 파트너스 주소가 하나라도 있으면, 이 문장을 본문 맨 첫 줄에 한 번만 둔다
+# (에이전트가 빠뜨리거나 다른 자리에 써도 브릿지가 보장한다. 사용자 결정, 2026-11-25).
+DISCLOSURE = "이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
+COUPANG_PARTNERS_HOST = "link.coupang.com"
+
+
+def is_coupang_partners_link(url: str) -> bool:
+    try:
+        host = (urlsplit(url).hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    return host == COUPANG_PARTNERS_HOST
+
+
+def _without_disclosure(body: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", body.replace(DISCLOSURE, "")).strip()
 
 
 def is_blocked_link(url: str) -> bool:
@@ -328,6 +347,9 @@ def kakao_reply_body(text: str) -> dict[str, Any]:
     links = [link for link in links if not is_blocked_link(link[0])]  # 막힌 링크는 버튼 칸도 차지하지 않는다
     if not links:  # 막힌 링크만 있었다: 원문을 보내면 URL 이 글자로 새므로, URL 을 뺀 본문만 보낸다
         return kakao_text_body(body or NO_LINK_MSG)
+    if any(is_coupang_partners_link(u) for u, _ in links[:MAX_BUTTONS]):   # 실제로 버튼이 되는 링크 기준
+        body = f"{DISCLOSURE}\n\n{_without_disclosure(body) or LINKS_ONLY_BODY}"
+    # 400자를 넘으면 나눈다. 말풍선은 최대 3개라 넘치면 가운데 조각이 빠지고, 카드 설명은 끝이 잘린다. 첫 줄은 항상 남는다.
     chunks = split_text(body, CARD_DESC_MAX) if body else []
     *head, last = chunks or [LINKS_ONLY_BODY]
     outputs: list[dict[str, Any]] = [{"simpleText": {"text": t}} for t in head[:2]]  # 말풍선 최대 3개
@@ -476,7 +498,7 @@ def is_question_reply(text: str) -> bool:
 def is_links_only(text: str) -> bool:
     """버튼으로 나갈 링크는 있는데 본문이 비어, kakao_reply_body 가 LINKS_ONLY_BODY 를 대신 넣는 답."""
     body, links = split_links(text)
-    return not body and any(not is_blocked_link(u) for u, _ in links)
+    return not _without_disclosure(body) and any(not is_blocked_link(u) for u, _ in links)
 
 
 def neutralize_user_text(text: str) -> str:
