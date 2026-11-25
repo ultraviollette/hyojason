@@ -24,7 +24,9 @@
 | (이번 커밋) | 페이지 읽기 상한 15 → 8초, `say` 를 한 줄로(읽은 것·못 읽은 것 따로), 검색 결과 배송비를 `candidates[].shipping_fee_krw` 로 받기 |
 | dd285c8 | 쿠팡 파트너스 응답 모양 확인용 시험 스크립트(`scripts/coupang_search_probe.py`, 효자손 코드와 연결 안 함) |
 | 10ecd19 | 쿠팡 파트너스 검색 `coupang_search`(아래 2-5), record_item 의 쿠팡 주소 거절, 브릿지 대가성 문구 보장 |
-| (이번 커밋) | 11/25 2차 시험 반영: 묶음마다 줄 전체(`options`: 가격·로켓·무료배송·url·image), 옵션이 나열된 상품은 사진으로 맞는 줄을 찾기 |
+| e1146d2 | deeplink 응답 모양 확인용 시험 스크립트(`scripts/coupang_deeplink_probe.py`) |
+| (이번 커밋) | 11/25 3차 시험 반영: 쿠팡 검색 버튼 `coupang_search_link`(deeplink), 로켓이 아닌 쿠팡 후보는 웹 후보와 견주기, 해외 판매 표시 빼기, 브릿지 "쿠팡에서 찾아보기" |
+| dfc8059 | 11/25 2차 시험 반영: 묶음마다 줄 전체(`options`: 가격·로켓·무료배송·url·image), 옵션이 나열된 상품은 사진으로 맞는 줄을 찾기 |
 | 06505d4 | 11/25 실사용 반영: 채움 결과(AFFGOLDBOX)를 empty 로, 검색어 바꿔 최대 3번, 브랜드 다른 표기, 옵션 나열 상품, httpx 요청 로그 끄기 |
 | c79139a | f3f5b0c 시험 반영: 후보 페이지 확인(`check_candidates`), 기록의 `match`(같은 물건/비슷한 것), 해요체·내부 용어·군말 금지(`confirm_note`), SKILL description |
 
@@ -205,18 +207,31 @@ callback `outcome` 값:
   - 옵션을 말씀하셨으면 이름만으로 후보로 삼지 않는다. `options` 의 image 를 비전 도구로 하나씩 봐서(한 물건에 최대 5장) 그 옵션 줄을 찾고, 그 줄의 url·가격(값 하나)으로 낸다. 못 찾거나 사진으로 모르면 그 상품을 빼고, 남는 것이 없으면 다시 찾기.
   - 옵션을 말씀하지 않았으면 링크로 낼 줄의 사진을 보고 "이 링크는 숲속향이에요. 다른 향은 말씀해 주세요"처럼 밝힌다(사용자 결정). 모르면 "이 링크의 향은 들어가서 확인해 주세요".
   - "들어가서 골라 주세요"라고 하지 않는다(그 페이지에서 못 고른다).
-- 고르는 순서(의뢰인 기준):
-  - 브랜드 상품: 로켓 먼저, `rocket_option` 을 고른다. 로켓이 아니면 "판매자와 배송을 들어가서 확인해 주세요". 공식·정품이라고 말하지 않는다.
-  - 그 밖: 조건에 맞는 것 중 싼 순서.
+- 고르는 순서(의뢰인 기준, 11/25 3차 시험 뒤 고침):
+  - 브랜드 상품: 맞는 후보 중 로켓(대표 줄·`rocket_option`·사진으로 찾은 줄)이 있으면 상품 버튼, 로켓을 앞에.
+    로켓이 아닌 것뿐이면 웹 검색도 한다. 그 쿠팡 후보는 name 에 해외 판매 표시(Amazon, 직구, 해외, 구매대행, 일본 한정 등)가 있거나 같은 양 기준 웹 후보의 대략 1.5배 이상이면 빼고, 아니면 웹 후보 뒤에 "판매자와 배송을 들어가서 확인해 주세요"를 붙여 둔다. 공식·정품이라고 말하지 않는다.
+  - 그 밖: 해외 판매 표시가 있는 후보만 빼고 조건에 맞는 것 중 싼 순서.
+  - 11/25 3차 시험(23:27~23:59): 사진으로 멕리듬 4줄에 유자가 없음을 알아낸 뒤 다시 찾아 "Amazon.co.jp 한정 … 유자향 16매입" 60,140원을 드렸다. 열어 보니 판매자 harebare, 우체국 EMS, 12/8 도착(해외 구매대행). 같은 날 웹 후보는 11번가 12매 12,500원이었다. 의뢰인: "이건 아니다". 쿠팡 사이트 검색 상단의 로켓배송 멕리듬 라벤더·무향은 검색 API 에 안 나왔다.
 - 가격·배송 문구:
   - 가격: "지금 약 …원, 들어가시면 달라질 수 있어요". price_varies 면 "약 …원부터, 옵션에 따라 달라요".
   - 배송: 로켓은 "로켓배송"만, 무료배송은 is_free_shipping 일 때만, 둘 다 아니면 "배송비가 더 붙을 수 있어요".
 - 링크·기록:
   - 링크 줄은 `N번 쿠팡: url`. check_candidates 는 부르지 않는다(코드도 coupang.com 하위 주소에는 요청하지 않는다).
   - record_item 에는 사용자가 말한 것 + seller="쿠팡"만 넣는다.
-- `empty` → 위 "다시 찾기". 세 번 다 없으면 "쿠팡에서는 제가 찾는 방법으로는 못 찾았어요"로 시작하고 웹 검색, 쿠팡 검색어 줄 없음. `unavailable` → 옛 흐름 그대로(옛 COUPANG_FIRST_NOTE), 사용자에게 말하지 않음.
+- `empty` → 위 "다시 찾기". 세 번 다 없으면 웹 검색 + 아래 쿠팡 검색 버튼, 쿠팡 검색어 줄 없음. `unavailable` → 옛 흐름 그대로(옛 COUPANG_FIRST_NOTE), 사용자에게 말하지 않음.
+
+**쿠팡 검색 버튼** (`coupang_search_link(keyword)`, `coupang_partners.search_link`)
+- 쿠팡 상품 후보를 하나도 내지 못한 답(세 번 다 못 찾음, 사진으로 확인 못 해 뺌, 위 고르는 순서로 뺌)에서 한 번 부른다. 검색어는 브랜드 + 사용자가 말한 특징.
+- deeplink: `POST /v2/providers/affiliate_open_api/apis/openapi/v1/deeplink`, 본문 `{"coupangUrls": ["https://www.coupang.com/np/search?q=<검색어>"]}`, 서명은 검색과 같은 방식(POST, 쿼리 없음). `data[0].shortenUrl`(`https://link.coupang.com/a/…`)을 그대로 돌려준다.
+  - 검색어는 인코딩하지 않고 한글·공백 그대로 넣는다(연속 공백만 하나로). 11/26 사용자 실제 호출: "…?q=메구리즘 유자향" → rCode 0, landingUrl 의 pageKey 에 온전히 들어옴.
+  - 11/25 사용자 확인: 이 shortenUrl 은 카카오 인앱 브라우저에서 쿠팡 검색 결과 화면으로 열린다. 상품 주소(7088615161)는 HTTP 200 rCode 400 "url convert failed" 라 상품 주소는 바꾸지 않는다.
+- 키·스위치 없음, 한도(검색과 같은 분당 30회를 같이 씀), 5초 초과, 네트워크 예외, HTTP 오류, rCode≠0, shortenUrl 이 없거나 link.coupang.com 이 아님 → unavailable(예외 없음, 사용자에게 말하지 않음, 버튼 없이 넘어감).
+- 로그: `path=coupang_search_link outcome=<ok|unavailable>`(+ `reason=`). 검색어·주소는 남기지 않는다.
+- 응답 규칙(`COUPANG_LINK_RULES`): 첫 줄 대가성 문구, "쿠팡에서는 딱 맞는 걸 제가 짚지 못했어요. 마지막 버튼을 누르면 쿠팡 검색 화면이 열려요.", 웹 후보 최대 2개 + 쿠팡 검색 버튼 1개, 링크 줄 맨 끝 `쿠팡 검색: url`(가격·상품명 없음), record_item·check_candidates 안 함.
+- unavailable 이고 세 번 다 못 찾은 답이면 옛 문장 "쿠팡에서는 제가 찾는 방법으로는 못 찾았어요"로 시작(`COUPANG_STOP_NEXT`).
 
 **카카오 브릿지** (`kakao-bridge-vps/server.py`)
+- 쿠팡 검색 버튼: 호스트 `link.coupang.com` 이고 경로가 `/a/` 로 시작하면 버튼 이름 "쿠팡에서 찾아보기"(`is_coupang_search_link`). 상품 링크(`/re/AFFSDP?…`)는 "쿠팡에서 보기" 그대로.
 - 버튼으로 나가는 링크(최대 3개)에 `link.coupang.com` 주소가 있으면, 본문에서 `DISCLOSURE` 문장을 모두 지우고 맨 첫 줄에 한 번 둔다. 링크만 온 답은 `DISCLOSURE` + `LINKS_ONLY_BODY` 로 나간다.
 - `DISCLOSURE` 는 브릿지와 `coupang_partners.py` 두 곳에 있다. 바꿀 때는 둘 다 바꾼다.
 - 본문 속 주소는 ASCII 글자까지만 주소로 본다. 주소 바로 뒤의 한글 조사가 주소에 섞이지 않는다.
@@ -276,8 +291,8 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 ## 4. 테스트
 
 ```bash
-cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 50 passed
-cd mcp && uv run python -m pytest -q                            # MCP: 103 passed
+cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 52 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 119 passed
 ```
 - 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
 - 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
@@ -321,6 +336,8 @@ cd mcp && uv run python -m pytest -q                            # MCP: 103 passe
 - (11/25) 응답 규칙(거르기·로켓 우선·가격 표현)이 실사용에서 지켜지는지. 확인 필요.
 - (11/25) 채움 판정은 landingUrl 접두사 하나에 기대고 있다. 쿠팡이 이 주소 형식을 바꾸면 정상 결과도 empty 가 된다(로그 outcome=filler 가 늘면 의심). 확인 필요.
 - (11/25) 다른 표기 브랜드를 같은 브랜드로 볼지는 에이전트 판단이다. 잘못 묶거나 버리는지 실사용으로 본다.
+- (11/26) 브릿지가 쿠팡 검색 버튼을 경로 `/a/` 로 가린다. deeplink 로 상품 주소를 바꾸게 되면 그것도 `/a/` 일 수 있어 "쿠팡에서 찾아보기"로 잘못 나간다. 지금은 상품 주소를 deeplink 로 바꾸지 않는다.
+- (11/26) "같은 양으로 견줘 대략 1.5배"와 해외 판매 표시 판단은 에이전트가 이름을 읽고 한다. 실사용으로 본다.
 - (11/25) Hermes 에 상품 사진 주소(productImage)를 보는 비전 도구가 있는지, 쓰면 시간이 얼마나 드는지(사진 최대 5장, 카카오 콜백 시간 안). 확인 필요.
 - (11/25) 이름에 옵션이 나열되지 않은 상품도 줄마다 다른 옵션 페이지로 가는지(그렇다면 price_varies 의 "…원부터, 옵션에 따라 달라요"도 틀린 말이 된다). 확인 필요.
 

@@ -891,3 +891,32 @@ def test_long_coupang_reply_keeps_disclosure_first_line() -> None:
     assert _texts(body)[0].startswith(DISCLOSURE + "\n")
     assert len(outputs[-1]["textCard"]["description"]) <= 400
     assert _buttons(body) == [("1번 쿠팡에서 보기", AFF)]
+
+
+# ---------- 쿠팡 검색 버튼(deeplink shortenUrl) ----------
+from server import is_coupang_search_link  # noqa: E402
+
+SEARCH_SHORT = "https://link.coupang.com/a/bZx9Qk"
+
+
+def test_coupang_search_link_button_label_url_unchanged_and_disclosure_first() -> None:
+    reply = ("쿠팡에서는 딱 맞는 걸 제가 짚지 못했어요. 마지막 버튼을 누르면 쿠팡 검색 화면이 열려요.\n"
+             "1) 메구리즘 증기 아이마스크 유자향 12매 · 지금 약 12,500원\n"
+             "1번 11번가: https://www.11st.co.kr/products/1\n"
+             f"쿠팡 검색: {SEARCH_SHORT}")
+    for r in (reply, reply + ".", reply.replace(f"쿠팡 검색: {SEARCH_SHORT}", f"[쿠팡 검색]({SEARCH_SHORT})"),
+              reply.replace(SEARCH_SHORT, SEARCH_SHORT + "에서")):
+        wire = json.loads(json.dumps(kakao_reply_body(r), ensure_ascii=False))
+        assert _buttons(wire) == [("1번 11번가에서 보기", "https://www.11st.co.kr/products/1"),
+                                  ("쿠팡에서 찾아보기", SEARCH_SHORT)], r
+        text = "\n".join(_texts(wire))
+        assert text.startswith(DISCLOSURE + "\n") and text.count(DISCLOSURE) == 1
+
+
+def test_product_and_search_coupang_links_are_told_apart() -> None:
+    assert is_coupang_search_link(SEARCH_SHORT)
+    assert not is_coupang_search_link(AFF)                                  # 상품 링크 /re/AFFSDP
+    assert not is_coupang_search_link("https://www.coupang.com/a/x")
+    body = kakao_reply_body(f"{LINE}\n1번 쿠팡: {AFF}\n쿠팡 검색: {SEARCH_SHORT}")
+    assert _buttons(body) == [("1번 쿠팡에서 보기", AFF), ("쿠팡에서 찾아보기", SEARCH_SHORT)]
+    assert all(len(label) <= 14 for label, _ in _buttons(body))

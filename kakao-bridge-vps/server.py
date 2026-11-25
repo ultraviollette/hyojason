@@ -234,6 +234,19 @@ def is_coupang_partners_link(url: str) -> bool:
     return host == COUPANG_PARTNERS_HOST
 
 
+# 쿠팡 검색 버튼(MCP coupang_search_link 의 deeplink shortenUrl, "https://link.coupang.com/a/…")은 상품이 아니라
+# 쿠팡 검색 화면으로 간다. 상품 링크(coupang_search 의 productUrl)는 "/re/AFFSDP?…" 라 경로로 나뉜다(11/25 사용자 확인).
+COUPANG_SEARCH_LABEL = "쿠팡에서 찾아보기"
+
+
+def is_coupang_search_link(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return (parts.hostname or "").rstrip(".") == COUPANG_PARTNERS_HOST and parts.path.startswith("/a/")
+
+
 def _without_disclosure(body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", body.replace(DISCLOSURE, "")).strip()
 
@@ -330,12 +343,17 @@ def link_buttons(links: list[tuple[str, str | None]]) -> list[dict[str, str]]:
     buttons, seen = [], []
     for url, hint in links[:MAX_BUTTONS]:
         number, rest = candidate_number(hint)
-        name = site_name(url, rest)
         prefix = f"{number}번 " if number else ""
+        if is_coupang_search_link(url):   # 상품이 아니라 쿠팡 검색 화면: "쿠팡에서 찾아보기"
+            name = COUPANG_SEARCH_LABEL
+        else:
+            name = site_name(url, rest)
         key = (prefix, name)
         suffix = f" {seen.count(key) + 1}" if key in seen else ""
         seen.append(key)
-        buttons.append({"action": "webLink", "label": _fit(name, prefix, suffix), "webLinkUrl": url})
+        label = (f"{prefix}{name}{suffix}"[:LABEL_MAX] if name == COUPANG_SEARCH_LABEL
+                 else _fit(name, prefix, suffix))
+        buttons.append({"action": "webLink", "label": label, "webLinkUrl": url})
     return buttons
 
 

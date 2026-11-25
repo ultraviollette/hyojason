@@ -42,6 +42,12 @@ LIMIT = 10                        # 검색 1회 상품 수
 SEARCH_PER_MINUTE = 30            # 문서상 분당 50회보다 낮게(사용자 결정)
 TIMEOUT_S = 5                     # 넘으면 사용 불가로 보고 웹 검색으로 간다
 SEARCH_LANDING_PREFIX = "https://link.coupang.com/re/AFFSRP"   # 정상 검색 결과의 landingUrl (아니면 채움 결과)
+# 쿠팡 주소 → 파트너스 주소(deeplink). 11/25 사용자가 scripts/coupang_deeplink_probe.py 로 확인: 검색과 같은 서명(POST, 쿼리 없음),
+# 본문 {"coupangUrls": [쿠팡 검색 주소]} → data[0].shortenUrl "https://link.coupang.com/a/…"(카카오 인앱에서 쿠팡 검색 화면이 열림).
+# 상품 주소(7088615161)는 HTTP 200 rCode 400 "url convert failed" 였다. 그래서 검색 화면 주소만 바꾼다.
+DEEPLINK_PATH = "/v2/providers/affiliate_open_api/apis/openapi/v1/deeplink"
+COUPANG_SEARCH_PAGE = "https://www.coupang.com/np/search?q="
+PARTNERS_LINK_PREFIX = "https://link.coupang.com/"
 # 쿠팡 파트너스 대가성 문구(사용자가 정한 문장). 카카오 브릿지(kakao-bridge-vps/server.py)의 DISCLOSURE 와 같아야 한다.
 DISCLOSURE = "이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
 
@@ -111,9 +117,9 @@ def _row(p: dict[str, Any]) -> dict[str, Any] | None:
             "image": p.get("productImage") if isinstance(p.get("productImage"), str) else ""}
 
 
-def _unavailable(reason: str) -> dict[str, Any]:
-    log.warning("path=coupang_search outcome=unavailable reason=%s", reason)
-    return {"status": "unavailable", "rows": [], "reason": reason}
+def _unavailable(reason: str, path: str = "coupang_search") -> dict[str, Any]:
+    log.warning("path=%s outcome=unavailable reason=%s", path, reason)
+    return {"status": "unavailable", "rows": [], "url": None, "reason": reason}
 
 
 async def search(keyword: str, *, transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
@@ -164,3 +170,53 @@ async def search(keyword: str, *, transport: httpx.AsyncBaseTransport | None = N
     status = "ok" if rows else "empty"
     log.info("path=coupang_search outcome=%s rows=%d", status, len(rows))
     return {"status": status, "rows": rows, "reason": None}
+
+
+def search_page_url(keyword: str) -> str:
+    """쿠팡 검색 화면 주소. 검색어는 인코딩하지 않고 한글·공백을 그대로 붙인다(사용자 결정, 11/26).
+    실제 호출로 확인: "…/np/search?q=메구리즘 유자향" → rCode 0, landingUrl 의 pageKey 에 "%EB%A9%94…%20%EC%9C%A0…"로
+    온전히 들어왔다. 연속 공백·앞뒤 공백만 정리한다. JSON 본문으로 가므로 주소창 인코딩은 쿠팡 쪽이 한다."""
+    return COUPANG_SEARCH_PAGE + " ".join(keyword.split())
+
+
+async def search_link(keyword: str, *, transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
+    """쿠팡 검색 화면 주소를 deeplink 로 파트너스 주소로 바꾼다. 반환: {"status": "ok" | "unavailable", "url": shortenUrl}.
+    키·스위치 없음, 한도(검색과 같은 분당 한도를 같이 씀), 시간 초과, 네트워크 예외, HTTP 오류, rCode≠0, 형식 오류는
+    unavailable. 예외를 내지 않는다. 로그는 결과 종류만(검색어·주소 없음)."""
+    path = "coupang_search_link"
+    if not has_credentials():
+        return _unavailable("no_credentials", path)
+    if not is_verified():
+        return _unavailable("not_verified", path)
+    now = time.monotonic()
+    if _rate_limited(now):
+        return _unavailable("rate_limited", path)
+
+    auth = authorization("POST", DEEPLINK_PATH, "", os.environ["COUPANG_ACCESS_KEY"], os.environ["COUPANG_SECRET_KEY"])
+    _calls.append(now)
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_S, transport=transport) as c:
+            r = await c.post(f"{HOST}{DEEPLINK_PATH}", json={"coupangUrls": [search_page_url(keyword)]},
+                             headers={"Authorization": auth, "Content-Type": "application/json;charset=UTF-8"})
+    except httpx.TimeoutException:
+        return _unavailable("timeout", path)
+    except Exception as e:  # 메시지에 주소(검색어)가 담길 수 있어 이름만 남긴다
+        return _unavailable(f"request_failed:{type(e).__name__}", path)
+    if r.status_code != 200:
+        return _unavailable(f"http_{r.status_code}", path)
+    try:
+        data = r.json()
+    except ValueError:
+        return _unavailable("bad_json", path)
+    if not isinstance(data, dict):
+        return _unavailable("bad_shape", path)
+    if str(data.get("rCode")) != "0":
+        return _unavailable(f"api_{str(data.get('rCode'))[:10]}", path)
+    items = data.get("data")
+    first = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+    url = first.get("shortenUrl")
+    # 브릿지가 대가성 문구를 붙이는 기준이 link.coupang.com 이라, 다른 주소는 쓰지 않는다
+    if not (isinstance(url, str) and url.startswith(PARTNERS_LINK_PREFIX) and url.isascii() and " " not in url):
+        return _unavailable("bad_shape", path)
+    log.info("path=%s outcome=ok", path)
+    return {"status": "ok", "rows": [], "url": url, "reason": None}

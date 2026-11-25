@@ -5,6 +5,7 @@
   make_search_links        정확한 상품명 → 네이버쇼핑 검색 링크 + 쿠팡 앱 검색어 (페이지는 읽지 않음)
   search_products          provider 구조: 네이버 (키 있을 때만, 2026-07-31 종료). 없으면 웹 검색 안내
   coupang_search           쿠팡 파트너스 검색 → 같은 상품(pageKey) 묶음 + 답 규칙 (주로 사는 곳에 쿠팡이 있는 분만)
+  coupang_search_link      쿠팡 검색 화면 → 파트너스 주소(deeplink). 쿠팡 상품 후보를 못 낸 답의 마지막 버튼
   check_product            사용자가 보낸 링크 하나를 읽고 Jev 게이트(재고·국내발송·기한·금지조건) 통과 여부
   check_candidates         웹 검색 후보 최대 3개를 동시에 읽고 낼지(show)·붙일 말(say)을 정함
   record_item              찾아 드린(found)·고르신(chosen) 물건 기록 (칸·50건 상한을 코드로 강제)
@@ -74,7 +75,8 @@ COUPANG_QUERY_ORDER = ("검색어 순서(한 물건에 coupang_search 최대 3�
 # 쿠팡 파트너스 검색이 켜져 있을 때(2026-11-25 사용자 결정).
 COUPANG_SEARCH_FIRST_NOTE = ("주로 사는 곳에 쿠팡이 있다. 후보를 찾을 때 웹 검색보다 먼저 coupang_search 를 부른다. "
                              + COUPANG_QUERY_ORDER +
-                             " 그 응답의 rules·next_step 을 따른다. 세 번 다 맞는 것이 없을 때만 웹 검색으로 간다.")
+                             " 그 응답의 rules·next_step 을 따른다. 웹 검색은 세 번 다 맞는 것이 없을 때, 또는 브랜드를 짚어 말한 "
+                             "물건인데 맞는 쿠팡 후보가 로켓배송이 아닌 것뿐일 때 한다.")
 
 
 def _place_rules(profile: dict[str, Any] | None) -> list[str]:
@@ -259,10 +261,14 @@ COUPANG_RULES = [
     "옵션이 나열된 상품인데 사용자가 옵션을 말하지 않았으면, 링크로 낼 줄(대표 줄 또는 rocket_option)의 image 를 보고 "
     "그 링크가 어느 옵션인지 한 줄로 밝힌다(예: '이 링크는 숲속향이에요. 다른 향은 말씀해 주세요'). 사진으로 알 수 없으면 "
     "'이 링크의 향은 들어가서 확인해 주세요'. '골라 주세요'라고 하지 않는다. 이 사진도 한 물건에 최대 5장에 센다.",
-    "브랜드를 짚어 말한 물건(화장품 등)은 값보다 유통 경로가 먼저다. is_rocket 인 상품을 앞에 두고, 대표 줄이 로켓이 아니고 "
-    "rocket_option 이 있으면 rocket_option(이름·가격·주소)을 고른다. 로켓이 아닌 후보에는 '판매자와 배송을 들어가서 확인해 주세요'를 붙인다. "
+    "브랜드를 짚어 말한 물건(화장품 등)은 값보다 유통 경로가 먼저다. 맞는 후보 중 로켓배송인 것(대표 줄이 로켓이거나 rocket_option, "
+    "옵션이 나열된 상품이면 사진으로 찾은 줄이 로켓)이 있으면 그 상품을 링크로 내고 로켓을 앞에 둔다. "
+    "맞는 쿠팡 후보가 로켓이 아닌 것뿐이면 거기서 끝내지 않고 웹 검색(SKILL 3-b)도 한다. 그 뒤 쿠팡 후보의 name 에 해외 판매 표시"
+    "(Amazon, 직구, 해외, 구매대행, 일본 한정 같은 말)가 있거나, 같은 양으로 견줘 웹 후보보다 눈에 띄게 비싸면(대략 1.5배 이상) "
+    "그 쿠팡 후보는 뺀다. 그렇지 않으면 웹 후보 뒤에 두고 '판매자와 배송을 들어가서 확인해 주세요'를 붙인다. "
     "'공식', '정품', 유통사 이름을 확인한 것처럼 말하지 않는다. 물으시면 '공식 유통인지는 제가 확인하지 못했어요'.",
-    "브랜드가 중요하지 않은 물건은 조건에 맞는 것 중 싼 순서로 둔다.",
+    "브랜드가 중요하지 않은 물건은 name 에 해외 판매 표시(Amazon, 직구, 해외, 구매대행, 일본 한정 같은 말)가 있는 후보만 빼고, "
+    "조건에 맞는 것 중 싼 순서로 둔다.",
     "후보는 최대 3개, 상품마다 '제품 이름 · 옵션 · 가격' 한 줄. 가격은 '지금 약 19,000원, 들어가시면 달라질 수 있어요'처럼 "
     "확정하지 않는다. price_varies 가 true 면 '약 19,000원부터, 옵션에 따라 달라요'로 말한다. 단, 옵션이 나열된 상품은 "
     "링크로 낸 줄의 price_krw 하나로 '약 …원'이라고 말한다(그 링크는 그 옵션 하나의 페이지다).",
@@ -274,13 +280,32 @@ COUPANG_RULES = [
     "seller='쿠팡', url·seen_price_krw 는 비운다. 쿠팡 기록은 다음에 다시 물으시면 다시 검색한다.",
     "거른 뒤 맞는 상품이 하나도 없으면 바로 웹 검색으로 가지 않는다. 이 응답의 next_if_no_match 를 따른다"
     "(검색어 순서대로 다시 찾기, 한 물건에 최대 3번).",
+    "쿠팡 상품 후보를 하나도 내지 못한 답(세 번 다 못 찾음, 사진으로 확인하지 못해 뺌, 위 규칙으로 뺌)에는 coupang_search_link 를 "
+    "한 번 불러(검색어: 브랜드 + 사용자가 말한 특징, 용량·색·유통 관련 말 제외) 그 응답의 rules 대로 쿠팡 검색 버튼을 마지막에 붙인다. "
+    "unavailable 이면 버튼 없이 넘어간다.",
 ]
+# 11/25 23:27~23:59 실사용: 검색 API 가 뭐라도 돌려주면 그걸 후보로 드렸다(해외 구매대행 60,140원, 같은 날 웹 후보 11번가 12,500원).
+# 쿠팡 사이트에는 로켓배송 상품이 있는데 검색 API 에는 안 나왔다. 멀쩡한 후보가 아니면 쿠팡 상품을 억지로 짚지 않고
+# 쿠팡 검색 화면으로 가는 버튼을 드린다(사용자 결정).
+COUPANG_LINK_FIRST_LINE = "쿠팡에서는 딱 맞는 걸 제가 짚지 못했어요. 마지막 버튼을 누르면 쿠팡 검색 화면이 열려요."
+COUPANG_LINK_RULES = [
+    "답의 맨 첫 줄은 disclosure 문장을 글자 그대로 쓴다(이 답에는 link.coupang.com 주소가 있다). 다른 어떤 말보다 앞에 둔다.",
+    f"쿠팡 이야기는 '{COUPANG_LINK_FIRST_LINE}'로 한다. '쿠팡에서는 제가 찾는 방법으로는 못 찾았어요'는 쓰지 않는다.",
+    "웹 후보는 최대 2개, 그 뒤에 쿠팡 검색 버튼 1개. 버튼은 모두 합쳐 3개까지다.",
+    "쿠팡 검색 링크 줄은 링크 줄 맨 마지막에 번호 없이 '쿠팡 검색: url' 로 쓴다. url 은 글자 하나 바꾸지 않는다. "
+    "이 버튼에는 가격·상품명을 붙이지 않는다(카카오에서 '쿠팡에서 찾아보기' 버튼이 된다).",
+    "쿠팡 검색 버튼만 드린 답에서는 쿠팡을 record_item 으로 기록하지 않는다. check_candidates 도 부르지 않는다.",
+]
+COUPANG_LINK_UNAVAILABLE_NEXT = ("쿠팡 검색 버튼은 지금 만들 수 없다. 버튼 없이 넘어가고, 이 일은 사용자에게 말하지 않는다. "
+                                 "쿠팡 링크가 없으면 대가성 문구도 넣지 않는다.")
 # 다시 찾기(attempt 1·2 에서 없음) / 세 번 다 없음. 채움 결과(검색 결과 없음)도 empty 로 온다.
 COUPANG_RETRY_NEXT = ("쿠팡에서 맞는 상품을 아직 못 찾았다. 아직 웹 검색으로 가지 않고 사용자에게도 말하지 않는다. "
                       "검색어를 다음 단계로 바꿔 coupang_search 를 attempt={next} 로 다시 부른다. " + COUPANG_QUERY_ORDER)
-COUPANG_STOP_NEXT = ("쿠팡에서 검색어를 바꿔 가며 찾아봤는데 맞는 상품이 없다. 더 부르지 않는다. 웹 검색(SKILL 3-b)으로 찾고, "
-                     "답은 '쿠팡에서는 제가 찾는 방법으로는 못 찾았어요'로 시작한다. 쿠팡 검색어 줄은 드리지 않는다. "
-                     "쿠팡 링크가 없으면 대가성 문구도 넣지 않는다.")
+COUPANG_STOP_NEXT = ("쿠팡에서 검색어를 바꿔 가며 찾아봤는데 맞는 상품이 없다. coupang_search 는 더 부르지 않는다. "
+                     "웹 검색(SKILL 3-b)으로 찾고, coupang_search_link(검색어: 브랜드 + 사용자가 말한 특징, 용량·색·유통 관련 말 제외)를 "
+                     "한 번 부른다. status=ok 면 그 응답의 rules 대로 답한다(첫 줄 대가성 문구, '" + COUPANG_LINK_FIRST_LINE + "', "
+                     "웹 후보 최대 2개, 쿠팡 검색 버튼은 마지막). unavailable 이면 버튼 없이 답을 '쿠팡에서는 제가 찾는 방법으로는 "
+                     "못 찾았어요'로 시작하고 대가성 문구는 넣지 않는다. 쿠팡 검색어 줄은 드리지 않는다.")
 
 
 def _no_match_next(attempt: int) -> str:
@@ -347,6 +372,19 @@ async def coupang_search(keyword: str, attempt: int = 1) -> dict[str, Any]:
     return {"status": "ok", "keyword": kw, "attempt": attempt, "products": _group_products(r["rows"]),
             "disclosure": coupang_partners.DISCLOSURE, "rules": COUPANG_RULES,
             "next_if_no_match": _no_match_next(attempt)}
+
+
+@mcp.tool()
+async def coupang_search_link(keyword: str) -> dict[str, Any]:
+    """쿠팡 검색 화면으로 가는 파트너스 주소(쿠팡 검색 버튼). 쿠팡 상품 후보를 하나도 내지 못한 답에서 한 번만 부른다
+    (coupang_search 의 rules·next_step 이 알려 준다). keyword 는 브랜드 + 사용자가 말한 특징(용량·색·유통 관련 말 제외).
+    반환 status: "ok"(url, disclosure, rules 를 따른다) | "unavailable"(버튼 없이 넘어간다. 사용자에게 말하지 않는다).
+    url 은 글자 하나 바꾸지 않고 링크 줄 맨 마지막에 '쿠팡 검색: url' 로 쓴다. 기록(record_item)하지 않는다."""
+    kw = _SPACES.sub(" ", keyword or "").strip()
+    r = await coupang_partners.search_link(kw) if kw else {"status": "unavailable"}
+    if r["status"] != "ok":
+        return {"status": "unavailable", "next_step": COUPANG_LINK_UNAVAILABLE_NEXT}
+    return {"status": "ok", "url": r["url"], "disclosure": coupang_partners.DISCLOSURE, "rules": COUPANG_LINK_RULES}
 
 
 _SPACES = re.compile(r"\s+")

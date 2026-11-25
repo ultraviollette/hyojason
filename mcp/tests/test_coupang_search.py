@@ -374,3 +374,109 @@ def test_options_keep_every_row_url_and_image_unchanged(monkeypatch) -> None:
     assert [o["image"] for o in p["options"]] == [_img(MEG_URLS[0]), _img(MEG_URLS[1]), "", _img(MEG_URLS[3])]
     assert [o["price_krw"] for o in p["options"]] == [29500, 29500, 29500, 27800]
     assert p["options"][1]["is_free_shipping"] is False
+
+
+# ---------- 쿠팡 검색 버튼(coupang_search_link, deeplink) ----------
+# 11/25 사용자 실제 확인: 검색 화면 주소 → data[0].shortenUrl "https://link.coupang.com/a/…", landingUrl AFFSRP.
+# 상품 주소(7088615161)는 HTTP 200 rCode 400 "url convert failed".
+SHORT = "https://link.coupang.com/a/bZx9Qk"
+_REAL_LINK = coupang_partners.search_link
+
+
+def _enable_link(monkeypatch, handler, verified="1"):
+    monkeypatch.setenv("COUPANG_ACCESS_KEY", "ak-test-SECRETLIKE")
+    monkeypatch.setenv("COUPANG_SECRET_KEY", "sk-test-SECRETLIKE")
+    if verified is not None:
+        monkeypatch.setenv("COUPANG_PARTNERS_VERIFIED", verified)
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(coupang_partners, "search_link", lambda kw: _REAL_LINK(kw, transport=transport))
+
+
+def _deeplink_ok(req):
+    url = json.loads(req.content)["coupangUrls"][0]
+    return httpx.Response(200, json={"rCode": "0", "rMessage": "", "data": [
+        {"originalUrl": url, "shortenUrl": SHORT,
+         "landingUrl": "https://link.coupang.com/re/AFFSRP?lptag=AF0000000&pageKey=%EB%A9%94%EA%B5%AC%EB%A6%AC%EC%A6%98"}]})
+
+
+def _link(kw="메구리즘 유자향"):
+    return asyncio.run(server.coupang_search_link(kw))
+
+
+def test_search_link_posts_raw_search_page_url_and_returns_shorten_url_unchanged(monkeypatch) -> None:
+    seen = []
+    _enable_link(monkeypatch, lambda req: seen.append(req) or _deeplink_ok(req))
+    r = _link("  메구리즘   유자향 ")
+    assert r == {"status": "ok", "url": SHORT, "disclosure": coupang_partners.DISCLOSURE,
+                 "rules": server.COUPANG_LINK_RULES}
+    req = seen[0]
+    assert req.method == "POST" and req.url.host == "api-gateway.coupang.com"
+    assert req.url.path == "/v2/providers/affiliate_open_api/apis/openapi/v1/deeplink" and req.url.query == b""
+    # 인코딩하지 않고 한글·공백 그대로(사용자 실제 확인, 11/26). 연속 공백만 하나로
+    assert json.loads(req.content) == {"coupangUrls": ["https://www.coupang.com/np/search?q=메구리즘 유자향"]}
+    assert req.headers["Authorization"].startswith("CEA algorithm=HmacSHA256, access-key=ak-test-SECRETLIKE, ")
+
+
+def test_search_link_signature_is_post_with_empty_query(monkeypatch) -> None:
+    seen = []
+    monkeypatch.setattr(coupang_partners, "authorization",
+                        lambda m, p, q, a, s, now=None: seen.append((m, p, q)) or "CEA x")
+    _enable_link(monkeypatch, _deeplink_ok)
+    assert _link()["status"] == "ok"
+    assert seen == [("POST", coupang_partners.DEEPLINK_PATH, "")]
+
+
+@pytest.mark.parametrize("handler", [
+    lambda req: httpx.Response(200, json={"rCode": "400", "rMessage": "url convert failed"}),
+    lambda req: httpx.Response(401, json={"rCode": "401"}),
+    lambda req: httpx.Response(200, text="not json"),
+    lambda req: httpx.Response(200, json={"rCode": "0", "data": []}),
+    lambda req: httpx.Response(200, json={"rCode": "0", "data": [{"shortenUrl": "https://evil.test/a/x"}]}),
+    lambda req: httpx.Response(200, json={"rCode": "0", "data": [{"originalUrl": "x"}]}),
+    _raise(httpx.ReadTimeout("slow")),
+    _raise(httpx.ConnectError("down")),
+])
+def test_search_link_failures_are_unavailable(monkeypatch, handler) -> None:
+    _enable_link(monkeypatch, handler)
+    assert _link() == {"status": "unavailable", "next_step": server.COUPANG_LINK_UNAVAILABLE_NEXT}
+
+
+@pytest.mark.parametrize("keys,verified", [(False, None), (True, None), (True, "0")])
+def test_search_link_without_keys_or_switch_makes_no_request(monkeypatch, keys, verified) -> None:
+    calls = []
+    if keys:
+        _enable_link(monkeypatch, lambda req: calls.append(1) or _deeplink_ok(req), verified=verified)
+    assert _link()["status"] == "unavailable" and calls == []
+
+
+def test_search_link_shares_per_minute_limit_with_search(monkeypatch) -> None:
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=OK))
+    _enable_link(monkeypatch, _deeplink_ok)
+    for _ in range(29):
+        assert _search()["status"] == "ok"
+    assert _link()["status"] == "ok"                      # 30번째
+    assert _link()["status"] == "unavailable" and _search()["status"] == "unavailable"
+
+
+def test_search_link_log_has_only_outcome(monkeypatch) -> None:
+    buf = io.StringIO()
+    handler = coupang_partners.log.handlers[0]
+    old = handler.setStream(buf)
+    _enable_link(monkeypatch, _deeplink_ok)
+    _link("메구리즘 유자향")
+    _enable_link(monkeypatch, lambda req: httpx.Response(200, json={"rCode": "400", "rMessage": "url convert failed"}))
+    _link("메구리즘 유자향")
+    handler.setStream(old)
+    lines = buf.getvalue().strip().splitlines()
+    assert lines == ["path=coupang_search_link outcome=ok",
+                     "path=coupang_search_link outcome=unavailable reason=api_400"]
+
+
+def test_link_rules_and_stop_next_text() -> None:
+    link_rules = " ".join(server.COUPANG_LINK_RULES)
+    assert "쿠팡에서는 딱 맞는 걸 제가 짚지 못했어요. 마지막 버튼을 누르면 쿠팡 검색 화면이 열려요." in link_rules
+    assert "웹 후보는 최대 2개" in link_rules and "가격·상품명을 붙이지 않는다" in link_rules
+    assert "coupang_search_link" in server.COUPANG_STOP_NEXT
+    rules = " ".join(server.COUPANG_RULES)
+    assert "대략 1.5배 이상" in rules and "Amazon, 직구, 해외, 구매대행, 일본 한정" in rules
+    assert "쿠팡 상품 후보를 하나도 내지 못한 답" in rules
