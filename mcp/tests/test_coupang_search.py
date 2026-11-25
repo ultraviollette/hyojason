@@ -5,6 +5,7 @@
 """
 import asyncio
 import io
+import json
 import logging
 import hashlib
 import hmac
@@ -30,9 +31,19 @@ B1 = _url("222", "9101", "7101")
 C1, C2 = _url("333", "9201", "7201"), _url("333", "9202", "7202")
 
 
+def _img(url: str) -> str:
+    """줄마다 다른 가짜 사진 주소(itemId 로 구분)."""
+    item = url.split("itemId=")[1].split("&")[0]
+    return f"https://thumbnail.coupangcdn.test/thumbnails/remote/230x230ex/image/retail/images/{item}-ab%2Bcd.jpg?q=1&x=2"
+
+
 def _p(rank, name, price, rocket, free, url):
     return {"rank": rank, "productName": name, "productPrice": price, "isRocket": rocket,
-            "isFreeShipping": free, "productUrl": url, "keyword": "록시땅 핸드크림"}
+            "isFreeShipping": free, "productUrl": url, "productImage": _img(url), "keyword": "록시땅 핸드크림"}
+
+
+def _opt(price, rocket, free, url):
+    return {"price_krw": price, "is_rocket": rocket, "is_free_shipping": free, "url": url, "image": _img(url)}
 
 
 SRP = "https://link.coupang.com/re/AFFSRP?lptag=AF0000000&pageKey=%EB%A1%9D%EC%8B%9C%EB%95%85&traceid=V0-1"
@@ -109,9 +120,11 @@ def test_rows_grouped_by_page_key_cheapest_row_is_representative(monkeypatch) ->
     assert a == {"name": "록시땅 시어버터 핸드크림 30ml", "price_min_krw": 19000, "price_max_krw": 23000,
                  "price_varies": True, "row_count": 3, "is_rocket": False, "is_free_shipping": False, "url": A1,
                  "rocket_option": {"name": "록시땅 시어버터 핸드크림 30ml, 단일 색상, 2개", "price_krw": 21500,
-                                   "is_free_shipping": True, "url": A2}}
+                                   "is_free_shipping": True, "url": A2},
+                 "options": [_opt(19000, False, False, A1), _opt(21500, True, True, A2), _opt(23000, True, False, A3)]}
     assert b == {"name": "록시땅 버베나 핸드크림 30ml", "price_min_krw": 24000, "price_max_krw": 24000,
-                 "price_varies": False, "row_count": 1, "is_rocket": True, "is_free_shipping": True, "url": B1}
+                 "price_varies": False, "row_count": 1, "is_rocket": True, "is_free_shipping": True, "url": B1,
+                 "options": [_opt(24000, True, True, B1)]}                      # 한 줄이어도 image 가 있다
     assert c["row_count"] == 2 and c["price_varies"] is False and c["url"] == C1   # 값이 같으면 앞 줄
     assert "rocket_option" not in c                                                 # 로켓 줄이 없다
 
@@ -245,7 +258,12 @@ def test_rules_text_for_brand_spelling_and_listed_options() -> None:
     rules = " ".join(server.COUPANG_RULES)
     assert "name 에 그 브랜드가 없는 상품은 버린다" not in rules
     assert "다른 표기(음차, 한국 판매명, 영문)" in rules and "쿠팡에서는 '멕리듬'이라는 이름으로 팔아요" in rules
-    assert "같은 브랜드인지 확인해 주세요" in rules and "'유자는 들어가서 골라 주세요'" in rules
+    assert "같은 브랜드인지 확인해 주세요" in rules
+    assert "유자는 들어가서 골라 주세요" not in rules                       # 11/25 2차 시험: 그 페이지에서 못 고른다
+    assert "이름만으로 후보로 삼지 않는다" in rules and "최대 5장" in rules
+    assert "그 상품은 후보에서 빼고 '들어가서 골라 주세요'라고 하지 않는다" in rules
+    assert "'이 링크는 숲속향이에요. 다른 향은 말씀해 주세요'" in rules
+    assert "name 에 아예 없을 때만 '용량은 들어가서 골라 주세요'" in rules
     assert "① 브랜드 + 사용자가 말한 특징을 말 그대로" in server.COUPANG_SEARCH_FIRST_NOTE
 
 
@@ -335,3 +353,24 @@ def test_http_library_request_log_does_not_carry_keyword(monkeypatch, caplog) ->
     for word in ("메구리즘", "%EB%A9%94", "keyword="):
         assert word not in caplog.text
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+# 11/25 22:58 실사용 응답을 흉내 낸 것: 이름이 같은 4줄, pageKey 같음, itemId 만 다름, 줄마다 다른 향 페이지·사진
+MEG = "멕리듬 온열 순환 스팀 아이마스크 12매 7종 택1 (무향/라벤더/캐모마일/유자/숲속/히노키/금목서)"
+MEG_URLS = [_url("9834261421", f"2400000{n}", f"8800000{n}") for n in ("030", "031", "032", "033")]
+
+
+def test_options_keep_every_row_url_and_image_unchanged(monkeypatch) -> None:
+    rows = [_p(i + 1, MEG, price, False, False, u) for i, (price, u) in
+            enumerate(zip((29500, 29500, 29500, 27800), MEG_URLS))]
+    del rows[1]["isFreeShipping"]
+    del rows[2]["productImage"]                                             # 사진이 없는 줄
+    sent = json.loads(json.dumps(rows))
+    _enable(monkeypatch, lambda req: httpx.Response(200, json={"rCode": "0", "data": {"landingUrl": SRP,
+                                                                                         "productData": rows}}))
+    (p,) = _search("메구리즘 유자향")["products"]
+    assert p["row_count"] == 4 and p["url"] == MEG_URLS[3] and p["price_min_krw"] == 27800   # 대표 값은 그대로
+    assert [o["url"] for o in p["options"]] == [r["productUrl"] for r in sent]               # 처음 나온 순서, 글자 그대로
+    assert [o["image"] for o in p["options"]] == [_img(MEG_URLS[0]), _img(MEG_URLS[1]), "", _img(MEG_URLS[3])]
+    assert [o["price_krw"] for o in p["options"]] == [29500, 29500, 29500, 27800]
+    assert p["options"][1]["is_free_shipping"] is False

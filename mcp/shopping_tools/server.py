@@ -248,15 +248,24 @@ COUPANG_RULES = [
     "(예: \"쿠팡에서는 '멕리듬'이라는 이름으로 팔아요\"). 같은 브랜드인지 확신이 없으면 버리지 않고 그 후보에 "
     "'같은 브랜드인지 확인해 주세요'를 붙인다. 말하지 않은 세트 상품은 버린다. "
     "향·라인 이름이 다르면 다른 제품이다(예: '버베인 아그륌', '시트러스 버베나'는 '버베나'와 다른 향).",
-    "용량·색 같은 조건은 name 에 적혀 있을 때만 맞다고 말한다. name 에 없으면 '용량은 들어가서 골라 주세요'처럼 말한다. "
-    "name 에 '7종 택1 (무향/라벤더/유자/…)'처럼 옵션이 나열돼 있고 사용자가 말한 옵션이 그 안에 있으면 후보로 삼고 "
-    "'유자는 들어가서 골라 주세요'처럼 말한다.",
+    "용량·색·향 같은 조건은 사용자가 말한 값이 name 에 그 값 하나로 적혀 있을 때만 맞다고 말한다. name 에 여러 값이 "
+    "나열돼 있으면 아래 '옵션이 나열된 상품' 규칙대로 사진으로 확인한다. name 에 아예 없을 때만 '용량은 들어가서 골라 주세요'처럼 말한다.",
+    "옵션이 나열된 상품: name 에 옵션이 여러 개 나열돼 있으면(택1, a/b/c 꼴) 같은 상품의 줄(options)마다 다른 옵션이다. "
+    "줄의 url 은 그 옵션 하나의 페이지로 가고 그 페이지에서 다른 옵션으로 바꿀 수 없다. name 에 나열된 옵션이 options 에 다 오지도 않는다. "
+    "사용자가 그중 하나를 말했으면 이름만으로 후보로 삼지 않는다. options 의 image 를 하나씩 비전 도구로 보고(한 물건에 최대 5장) "
+    "사용자가 말한 옵션인 줄을 찾는다. 찾으면 그 줄의 url 과 price_krw 로 후보를 내고 가격은 그 값 하나로 '약 …원'이라고 말한다"
+    "(대표 줄·rocket_option 보다 이 줄이 먼저다). 찾지 못했거나 사진으로 알 수 없으면 그 상품은 후보에서 빼고 "
+    "'들어가서 골라 주세요'라고 하지 않는다.",
+    "옵션이 나열된 상품인데 사용자가 옵션을 말하지 않았으면, 링크로 낼 줄(대표 줄 또는 rocket_option)의 image 를 보고 "
+    "그 링크가 어느 옵션인지 한 줄로 밝힌다(예: '이 링크는 숲속향이에요. 다른 향은 말씀해 주세요'). 사진으로 알 수 없으면 "
+    "'이 링크의 향은 들어가서 확인해 주세요'. '골라 주세요'라고 하지 않는다. 이 사진도 한 물건에 최대 5장에 센다.",
     "브랜드를 짚어 말한 물건(화장품 등)은 값보다 유통 경로가 먼저다. is_rocket 인 상품을 앞에 두고, 대표 줄이 로켓이 아니고 "
     "rocket_option 이 있으면 rocket_option(이름·가격·주소)을 고른다. 로켓이 아닌 후보에는 '판매자와 배송을 들어가서 확인해 주세요'를 붙인다. "
     "'공식', '정품', 유통사 이름을 확인한 것처럼 말하지 않는다. 물으시면 '공식 유통인지는 제가 확인하지 못했어요'.",
     "브랜드가 중요하지 않은 물건은 조건에 맞는 것 중 싼 순서로 둔다.",
     "후보는 최대 3개, 상품마다 '제품 이름 · 옵션 · 가격' 한 줄. 가격은 '지금 약 19,000원, 들어가시면 달라질 수 있어요'처럼 "
-    "확정하지 않는다. price_varies 가 true 면 '약 19,000원부터, 옵션에 따라 달라요'로 말한다.",
+    "확정하지 않는다. price_varies 가 true 면 '약 19,000원부터, 옵션에 따라 달라요'로 말한다. 단, 옵션이 나열된 상품은 "
+    "링크로 낸 줄의 price_krw 하나로 '약 …원'이라고 말한다(그 링크는 그 옵션 하나의 페이지다).",
     "is_rocket 이면 '로켓배송'이라고만 하고 배송비는 단정하지 않는다. '무료배송'은 is_free_shipping 이 true 일 때만 말한다. "
     "둘 다 아니면 '배송비가 더 붙을 수 있어요'.",
     "링크 줄은 'N번 쿠팡: url' 로 쓰고 url 은 글자 하나 바꾸지 않는다(카카오에서 '쿠팡에서 보기' 버튼이 된다). "
@@ -284,6 +293,9 @@ COUPANG_UNAVAILABLE_NEXT = ("지금은 쓸 수 없다. 이 일은 사용자에�
 def _group_products(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """같은 pageKey(같은 상품, itemId 가 다른 옵션 줄)를 한 상품으로 묶는다. 순서는 처음 나온 줄 순서.
     대표 값(이름·로켓·무료배송·주소)은 가장 싼 줄 것이다. 링크가 그 줄이라 설명과 링크가 맞는다.
+    options: 묶음의 줄 전체(처음 나온 순서). 11/25 실사용: pageKey 가 같은 줄은 같은 상품의 옵션이지만 줄의 url 은 그 옵션
+    하나의 페이지로 가고(거기서 다른 옵션으로 못 바꿈), 이름에 나열된 옵션이 응답에 다 오지도 않았다. 줄의 image 로 옵션을
+    구분할 수 있었다. 그래서 에이전트가 사진으로 맞는 줄을 고를 수 있게 줄마다 url·image 를 그대로 준다.
     옵션 글자가 이름에 있는지는 추정하지 않는다("…-200ml-가든화이트"처럼 틀리는 이름이 있다). 에이전트가 name 을 읽는다."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -294,7 +306,8 @@ def _group_products(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prices = [r["price_krw"] for r in g]
         p = {"name": cheapest["name"], "price_min_krw": min(prices), "price_max_krw": max(prices),
              "price_varies": len(set(prices)) > 1, "row_count": len(g), "is_rocket": cheapest["is_rocket"],
-             "is_free_shipping": cheapest["is_free_shipping"], "url": cheapest["url"]}
+             "is_free_shipping": cheapest["is_free_shipping"], "url": cheapest["url"],
+             "options": [{k: r[k] for k in ("price_krw", "is_rocket", "is_free_shipping", "url", "image")} for r in g]}
         rockets = [r for r in g if r["is_rocket"]]
         if not cheapest["is_rocket"] and rockets:
             ro = min(rockets, key=lambda r: r["price_krw"])
@@ -313,7 +326,8 @@ async def coupang_search(keyword: str, attempt: int = 1) -> dict[str, Any]:
     반환 status: "ok"(products 있음, disclosure·rules 를 따르고 맞는 것이 없으면 next_if_no_match) |
     "empty"(찾아봤는데 없음, next_step) | "unavailable"(지금 쓸 수 없음, next_step. 사용자에게 말하지 않는다).
     products[]: 같은 상품의 옵션 줄을 묶은 것. name, price_min_krw~price_max_krw, price_varies, row_count,
-    is_rocket, is_free_shipping, url(가장 싼 줄, 글자 그대로 쓴다), rocket_option(가장 싼 줄이 로켓이 아니고 로켓 줄이 있을 때).
+    is_rocket, is_free_shipping, url(가장 싼 줄, 글자 그대로 쓴다), rocket_option(가장 싼 줄이 로켓이 아니고 로켓 줄이 있을 때),
+    options(줄 전체: price_krw, is_rocket, is_free_shipping, url, image. 줄마다 다른 옵션 페이지로 간다).
     가격은 배송비를 뺀 값이다. 판매자·품절·해외배송 정보는 없다."""
     kw = _SPACES.sub(" ", keyword or "").strip()
     try:

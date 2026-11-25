@@ -106,7 +106,9 @@ def _row(p: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {"rank": p.get("rank"), "name": name.strip(), "price_krw": price, "is_rocket": p.get("isRocket") is True,
             # isFreeShipping 칸이 없는 줄이 많다(11/25). 없거나 true 가 아니면 무료배송이 아닌 것으로 본다
-            "is_free_shipping": p.get("isFreeShipping") is True, "url": url, "page_key": page_key(url)}
+            "is_free_shipping": p.get("isFreeShipping") is True, "url": url, "page_key": page_key(url),
+            # 줄마다 다른 옵션의 사진(11/25: 사진으로 향을 구분할 수 있었다). 받은 글자 그대로, 없으면 ""
+            "image": p.get("productImage") if isinstance(p.get("productImage"), str) else ""}
 
 
 def _unavailable(reason: str) -> dict[str, Any]:
