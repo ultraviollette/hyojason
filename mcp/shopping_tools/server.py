@@ -33,6 +33,11 @@ from . import coupang_partners, gates, naver, profiles
 
 mcp = _Server("hyojason-shopping-tools")
 
+# HTTP 라이브러리(httpx·httpcore)는 INFO 로 요청 주소를 남긴다. 쿠팡 검색 주소에는 검색어가, 후보 확인 주소에는
+# 상품 주소가 들어간다(11/25 mcp-stderr.log 에서 확인). 경고 이상만 남긴다.
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
 
 # ---------- 클라이언트 프로필 ----------
 
@@ -56,11 +61,20 @@ NAVER_FIRST_NOTE = ("주로 사는 곳에 네이버가 있다. 웹 검색 후보
                     "네이버를 직접 확인한 것이 아니므로 '네이버에서는 못 찾았어요'라고 말하지 않는다.")
 
 
-# 쿠팡 파트너스 검색이 켜져 있을 때(2026-11-25 사용자 결정). 검색어 규칙은 사용자 실사용 관찰:
-# "R.LUX", "알럭스" 같은 유통 관련 말을 더하면 무관한 상품이 섞였다.
+# 쿠팡 검색어 순서(2026-11-25 사용자 결정, 같은 날 실사용 반영). 한 물건에 coupang_search 최대 3번.
+# 실사용: "메구리즘 유자향"을 "메구리즘 유자"로 줄여 불렀더니 채움 결과(검색 결과 없음)가 왔다. "메구리즘 유자향"·
+# "스팀 아이마스크 유자"는 정상 결과였다. 쿠팡 이름은 "멕리듬 …"이라 브랜드 표기가 달랐다.
+# "R.LUX", "알럭스" 같은 유통 관련 말을 더하면 무관한 상품이 섞였다(용량·색·유통 관련 말은 넣지 않는다).
+MAX_COUPANG_ATTEMPTS = 3
+COUPANG_QUERY_ORDER = ("검색어 순서(한 물건에 coupang_search 최대 3번, attempt=1·2·3): "
+                       "① 브랜드 + 사용자가 말한 특징을 말 그대로(예: '메구리즘 유자향'. '유자향'을 '유자'로 줄이지 않는다) "
+                       "② 브랜드를 빼고 종류 + 특징(예: '스팀 아이마스크 유자향') ③ 브랜드만(예: '메구리즘'). "
+                       "특징은 향·라인·시리즈 이름처럼 제품을 가르는 말이다. 용량·색·유통 관련 말(정품, 공식, 유통사 이름)은 넣지 않는다. "
+                       "앞에서 쓴 검색어와 같아지거나 넣을 말이 없는 단계는 건너뛴다.")
+# 쿠팡 파트너스 검색이 켜져 있을 때(2026-11-25 사용자 결정).
 COUPANG_SEARCH_FIRST_NOTE = ("주로 사는 곳에 쿠팡이 있다. 후보를 찾을 때 웹 검색보다 먼저 coupang_search 를 부른다. "
-                             "검색어는 '브랜드 + 종류'만 쓰고 용량·색·유통 관련 말(정품, 공식, 유통사 이름)은 넣지 않는다. "
-                             "그 응답의 rules·next_step 을 따른다. 맞는 것이 하나도 없을 때만 웹 검색으로 간다.")
+                             + COUPANG_QUERY_ORDER +
+                             " 그 응답의 rules·next_step 을 따른다. 세 번 다 맞는 것이 없을 때만 웹 검색으로 간다.")
 
 
 def _place_rules(profile: dict[str, Any] | None) -> list[str]:
@@ -229,9 +243,14 @@ NO_RESULT_NEXT_STEP = (
 # 답 규칙(사용자 결정, 2026-11-25). 글 규칙만으로는 잘 안 지켜져 도구 응답에 싣는다(ask_payment_note 와 같은 방식).
 COUPANG_RULES = [
     "답의 맨 첫 줄은 disclosure 문장을 글자 그대로 쓴다. 다른 어떤 말보다 앞에 두고, 조건을 붙이거나 줄이지 않는다.",
-    "거르기는 상품 name 으로 한다. 브랜드를 말한 요청이면 name 에 그 브랜드가 없는 상품은 버린다. 말하지 않은 세트 상품은 버린다. "
+    "거르기는 상품 name 으로 한다. 브랜드를 말한 요청이면 그 브랜드의 상품만 남긴다. 다른 표기(음차, 한국 판매명, 영문)로 "
+    "적힌 같은 브랜드는 같은 브랜드로 본다(예: '메구리즘'과 '멕리듬'). 표기가 다르면 답에 한 줄로 밝힌다"
+    "(예: \"쿠팡에서는 '멕리듬'이라는 이름으로 팔아요\"). 같은 브랜드인지 확신이 없으면 버리지 않고 그 후보에 "
+    "'같은 브랜드인지 확인해 주세요'를 붙인다. 말하지 않은 세트 상품은 버린다. "
     "향·라인 이름이 다르면 다른 제품이다(예: '버베인 아그륌', '시트러스 버베나'는 '버베나'와 다른 향).",
-    "용량·색 같은 조건은 name 에 적혀 있을 때만 맞다고 말한다. name 에 없으면 '용량은 들어가서 골라 주세요'처럼 말한다.",
+    "용량·색 같은 조건은 name 에 적혀 있을 때만 맞다고 말한다. name 에 없으면 '용량은 들어가서 골라 주세요'처럼 말한다. "
+    "name 에 '7종 택1 (무향/라벤더/유자/…)'처럼 옵션이 나열돼 있고 사용자가 말한 옵션이 그 안에 있으면 후보로 삼고 "
+    "'유자는 들어가서 골라 주세요'처럼 말한다.",
     "브랜드를 짚어 말한 물건(화장품 등)은 값보다 유통 경로가 먼저다. is_rocket 인 상품을 앞에 두고, 대표 줄이 로켓이 아니고 "
     "rocket_option 이 있으면 rocket_option(이름·가격·주소)을 고른다. 로켓이 아닌 후보에는 '판매자와 배송을 들어가서 확인해 주세요'를 붙인다. "
     "'공식', '정품', 유통사 이름을 확인한 것처럼 말하지 않는다. 물으시면 '공식 유통인지는 제가 확인하지 못했어요'.",
@@ -244,10 +263,19 @@ COUPANG_RULES = [
     "쿠팡 링크에는 check_candidates 를 부르지 않는다.",
     "record_item 에는 쿠팡에서 받은 이름·가격·링크를 넣지 않는다. name 은 사용자가 말한 종류, brand·options 는 사용자가 말한 것, "
     "seller='쿠팡', url·seen_price_krw 는 비운다. 쿠팡 기록은 다음에 다시 물으시면 다시 검색한다.",
-    "맞는 상품이 하나도 없으면 웹 검색(SKILL 3-b)으로 간다. 그 답은 '쿠팡에서는 못 찾았어요'로 시작하고 쿠팡 검색어 줄은 드리지 않는다.",
+    "거른 뒤 맞는 상품이 하나도 없으면 바로 웹 검색으로 가지 않는다. 이 응답의 next_if_no_match 를 따른다"
+    "(검색어 순서대로 다시 찾기, 한 물건에 최대 3번).",
 ]
-COUPANG_EMPTY_NEXT = ("쿠팡에서 찾아봤는데 상품이 없다. 웹 검색(SKILL 3-b)으로 찾고, 답은 '쿠팡에서는 못 찾았어요'로 시작한다. "
-                      "쿠팡 검색어 줄은 드리지 않는다. 쿠팡 링크가 없으면 대가성 문구도 넣지 않는다.")
+# 다시 찾기(attempt 1·2 에서 없음) / 세 번 다 없음. 채움 결과(검색 결과 없음)도 empty 로 온다.
+COUPANG_RETRY_NEXT = ("쿠팡에서 맞는 상품을 아직 못 찾았다. 아직 웹 검색으로 가지 않고 사용자에게도 말하지 않는다. "
+                      "검색어를 다음 단계로 바꿔 coupang_search 를 attempt={next} 로 다시 부른다. " + COUPANG_QUERY_ORDER)
+COUPANG_STOP_NEXT = ("쿠팡에서 검색어를 바꿔 가며 찾아봤는데 맞는 상품이 없다. 더 부르지 않는다. 웹 검색(SKILL 3-b)으로 찾고, "
+                     "답은 '쿠팡에서는 제가 찾는 방법으로는 못 찾았어요'로 시작한다. 쿠팡 검색어 줄은 드리지 않는다. "
+                     "쿠팡 링크가 없으면 대가성 문구도 넣지 않는다.")
+
+
+def _no_match_next(attempt: int) -> str:
+    return COUPANG_STOP_NEXT if attempt >= MAX_COUPANG_ATTEMPTS else COUPANG_RETRY_NEXT.format(next=attempt + 1)
 # 사용 불가(키·스위치 없음, 한도, 시간 초과, 오류)면 지금 흐름 그대로. 사용자에게는 말하지 않는다.
 COUPANG_UNAVAILABLE_NEXT = ("지금은 쓸 수 없다. 이 일은 사용자에게 말하지 않는다. 지금까지의 흐름 그대로 한다: "
                             + COUPANG_FIRST_NOTE)
@@ -277,24 +305,34 @@ def _group_products(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-async def coupang_search(keyword: str) -> dict[str, Any]:
+async def coupang_search(keyword: str, attempt: int = 1) -> dict[str, Any]:
     """쿠팡 파트너스 검색. place_rules 가 coupang_search 를 먼저 부르라고 할 때만 쓴다(주로 사는 곳에 쿠팡이 있는 분).
-    keyword 는 '브랜드 + 종류'만(예: '록시땅 핸드크림'). 용량·색·유통 관련 말(정품, 공식, 유통사 이름)은 넣지 않는다.
-    반환 status: "ok"(products 있음, disclosure·rules 를 따른다) | "empty"(찾아봤는데 없음, next_step) |
-    "unavailable"(지금 쓸 수 없음, next_step. 사용자에게 말하지 않는다).
+    한 물건에 최대 3번. attempt 는 이번 물건에서 몇 번째 부르는지(1·2·3).
+    keyword 순서: ① 브랜드 + 사용자가 말한 특징을 말 그대로(예: '메구리즘 유자향') ② 브랜드를 빼고 종류 + 특징
+    ③ 브랜드만. 용량·색·유통 관련 말(정품, 공식, 유통사 이름)은 넣지 않는다.
+    반환 status: "ok"(products 있음, disclosure·rules 를 따르고 맞는 것이 없으면 next_if_no_match) |
+    "empty"(찾아봤는데 없음, next_step) | "unavailable"(지금 쓸 수 없음, next_step. 사용자에게 말하지 않는다).
     products[]: 같은 상품의 옵션 줄을 묶은 것. name, price_min_krw~price_max_krw, price_varies, row_count,
     is_rocket, is_free_shipping, url(가장 싼 줄, 글자 그대로 쓴다), rocket_option(가장 싼 줄이 로켓이 아니고 로켓 줄이 있을 때).
     가격은 배송비를 뺀 값이다. 판매자·품절·해외배송 정보는 없다."""
     kw = _SPACES.sub(" ", keyword or "").strip()
+    try:
+        attempt = max(int(attempt), 1)
+    except (TypeError, ValueError):
+        attempt = 1
+    if attempt > MAX_COUPANG_ATTEMPTS:   # 한 물건에 3번까지. 넘으면 요청하지 않는다
+        return {"status": "empty", "keyword": kw, "attempt": attempt, "products": [], "next_step": COUPANG_STOP_NEXT}
     if not kw:
         return {"status": "unavailable", "products": [], "next_step": COUPANG_UNAVAILABLE_NEXT}
     r = await coupang_partners.search(kw)
     if r["status"] == "unavailable":
         return {"status": "unavailable", "products": [], "next_step": COUPANG_UNAVAILABLE_NEXT}
     if r["status"] == "empty":
-        return {"status": "empty", "keyword": kw, "products": [], "next_step": COUPANG_EMPTY_NEXT}
-    return {"status": "ok", "keyword": kw, "products": _group_products(r["rows"]),
-            "disclosure": coupang_partners.DISCLOSURE, "rules": COUPANG_RULES}
+        return {"status": "empty", "keyword": kw, "attempt": attempt, "products": [],
+                "next_step": _no_match_next(attempt)}
+    return {"status": "ok", "keyword": kw, "attempt": attempt, "products": _group_products(r["rows"]),
+            "disclosure": coupang_partners.DISCLOSURE, "rules": COUPANG_RULES,
+            "next_if_no_match": _no_match_next(attempt)}
 
 
 _SPACES = re.compile(r"\s+")

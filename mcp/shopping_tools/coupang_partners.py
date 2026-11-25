@@ -6,6 +6,9 @@
   v1 경로 HTTP 200 rCode "0", 상품 칸은 rank, productName, productPrice, isRocket, isFreeShipping, productUrl, keyword.
   categoryName·판매자·품절·해외배송·옵션 칸은 없다. productPrice 는 19000.0 처럼 소수로 올 때가 있고 배송비를 뺀 값이다.
 - 호출 제한: 문서상 분당 50회. 여유를 두고 분당 30회에서 멈춘다(사용자 결정).
+- 채움 결과: 검색 결과가 없으면 API 가 골드박스 상품(검색어와 무관, 호출마다 다름)으로 채워 돌려준다.
+  그때 landingUrl 은 AFFGOLDBOX 이고, 정상 검색이면 AFFSRP 다(11/25 사용자 실사용·시험 스크립트로 확인).
+  landingUrl 이 AFFSRP 로 시작하지 않으면 상품을 버리고 empty 로 돌려준다(로그 outcome=filler).
 - 저장 금지: 이 API 에서 받은 데이터는 약관상 저장·복제하면 안 된다. profiles.record_item 이 link.coupang.com 주소를 거절한다.
 - 로그(stderr)에는 결과 종류와 개수만 남긴다. 키·서명·검색어는 남기지 않는다.
 """
@@ -38,6 +41,7 @@ SEARCH_PATH = "/v2/providers/affiliate_open_api/apis/openapi/v1/products/search"
 LIMIT = 10                        # 검색 1회 상품 수
 SEARCH_PER_MINUTE = 30            # 문서상 분당 50회보다 낮게(사용자 결정)
 TIMEOUT_S = 5                     # 넘으면 사용 불가로 보고 웹 검색으로 간다
+SEARCH_LANDING_PREFIX = "https://link.coupang.com/re/AFFSRP"   # 정상 검색 결과의 landingUrl (아니면 채움 결과)
 # 쿠팡 파트너스 대가성 문구(사용자가 정한 문장). 카카오 브릿지(kakao-bridge-vps/server.py)의 DISCLOSURE 와 같아야 한다.
 DISCLOSURE = "이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
 
@@ -101,6 +105,7 @@ def _row(p: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(url, str) or not url or not isinstance(name, str) or not name.strip() or price is None:
         return None
     return {"rank": p.get("rank"), "name": name.strip(), "price_krw": price, "is_rocket": p.get("isRocket") is True,
+            # isFreeShipping 칸이 없는 줄이 많다(11/25). 없거나 true 가 아니면 무료배송이 아닌 것으로 본다
             "is_free_shipping": p.get("isFreeShipping") is True, "url": url, "page_key": page_key(url)}
 
 
@@ -111,7 +116,7 @@ def _unavailable(reason: str) -> dict[str, Any]:
 
 async def search(keyword: str, *, transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
     """반환: {"status": "ok" | "empty" | "unavailable", "rows": [...], "reason": 사용 불가 이유(로그용)}.
-    ok: 상품 줄이 있음. empty: rCode 0 인데 0건(찾아봤는데 없음). unavailable: 키·스위치 없음, 한도, 시간 초과,
+    ok: 상품 줄이 있음. empty: rCode 0 인데 0건이거나 채움 결과(landingUrl 이 AFFSRP 가 아님). 둘 다 찾아봤는데 없음. unavailable: 키·스위치 없음, 한도, 시간 초과,
     네트워크 예외, HTTP 오류, rCode≠0, 형식 오류. 예외를 내지 않는다."""
     if not has_credentials():
         return _unavailable("no_credentials")
@@ -143,12 +148,17 @@ async def search(keyword: str, *, transport: httpx.AsyncBaseTransport | None = N
         return _unavailable("bad_shape")
     if str(data.get("rCode")) != "0":
         return _unavailable(f"api_{str(data.get('rCode'))[:10]}")
-    products = (data.get("data") or {}).get("productData") if isinstance(data.get("data"), dict) else None
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    products = inner.get("productData")
     if products is None:
         products = []
     if not isinstance(products, list):
         return _unavailable("bad_shape")
     rows = [x for x in (_row(p) for p in products if isinstance(p, dict)) if x]
+    landing = inner.get("landingUrl")
+    if rows and not (isinstance(landing, str) and landing.startswith(SEARCH_LANDING_PREFIX)):
+        log.info("path=coupang_search outcome=filler rows=%d", len(rows))   # 검색어와 무관한 채움 상품은 버린다
+        return {"status": "empty", "rows": [], "reason": None}
     status = "ok" if rows else "empty"
     log.info("path=coupang_search outcome=%s rows=%d", status, len(rows))
     return {"status": status, "rows": rows, "reason": None}

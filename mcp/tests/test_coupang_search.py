@@ -5,6 +5,7 @@
 """
 import asyncio
 import io
+import logging
 import hashlib
 import hmac
 from datetime import datetime, timezone
@@ -34,7 +35,9 @@ def _p(rank, name, price, rocket, free, url):
             "isFreeShipping": free, "productUrl": url, "keyword": "록시땅 핸드크림"}
 
 
-OK = {"rCode": "0", "rMessage": "", "data": {"landingUrl": "https://link.coupang.com/a/landing", "productData": [
+SRP = "https://link.coupang.com/re/AFFSRP?lptag=AF0000000&pageKey=%EB%A1%9D%EC%8B%9C%EB%95%85&traceid=V0-1"
+GOLDBOX = "https://link.coupang.com/re/AFFGOLDBOX?lptag=AF0000000&traceid=V0-2"
+OK = {"rCode": "0", "rMessage": "", "data": {"landingUrl": SRP, "productData": [
     _p(1, "록시땅 시어버터 핸드크림 30ml", 19000.0, False, False, A1),             # 가장 싼 줄, 로켓 아님
     _p(2, "록시땅 시어버터 핸드크림 30ml, 단일 색상, 2개", 21500, True, True, A2),  # 같은 상품(pageKey 111), 로켓
     _p(3, "록시땅 버베나 핸드크림 30ml", "24000.0", True, True, B1),
@@ -168,10 +171,82 @@ def test_request_timeout_is_five_seconds() -> None:
 
 
 def test_zero_results_is_empty_not_unavailable(monkeypatch) -> None:
-    _enable(monkeypatch, lambda req: httpx.Response(200, json={"rCode": "0", "data": {"productData": []}}))
+    _enable(monkeypatch, lambda req: httpx.Response(200, json={"rCode": "0", "data": {"landingUrl": SRP,
+                                                                                         "productData": []}}))
     r = _search()
-    assert r["status"] == "empty" and r["products"] == [] and r["next_step"] == server.COUPANG_EMPTY_NEXT
-    assert "쿠팡에서는 못 찾았어요" in r["next_step"] and "disclosure" not in r
+    assert r["status"] == "empty" and r["products"] == [] and "disclosure" not in r
+    assert r["next_step"] == server.COUPANG_RETRY_NEXT.format(next=2)
+
+
+# ---------- 채움 결과(검색 결과 없음 → 골드박스 상품) ----------
+
+def _filler(landing):
+    return {"rCode": "0", "data": {**({"landingUrl": landing} if landing is not None else {}), "productData": [
+        _p(1, "코카콜라 제로 355ml 24캔", 21900, True, True, _url("901", "1", "1")),
+        _p(2, "스테인리스 냄비 3종", 39000, False, False, _url("902", "2", "2")),
+        _p(3, "노트북 15인치", 899000, True, True, _url("903", "3", "3"))]}}
+
+
+@pytest.mark.parametrize("landing", [GOLDBOX, None, "", "https://link.coupang.com/re/AFFSDP?x=1",
+                                     "https://evil.test/re/AFFSRP"])
+def test_filler_results_without_affsrp_landing_are_empty(monkeypatch, landing) -> None:
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=_filler(landing)))
+    r = _search("메구리즘 유자")
+    assert r["status"] == "empty" and r["products"] == [] and "disclosure" not in r
+
+
+def test_affsrp_landing_is_ok(monkeypatch) -> None:
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=_filler(SRP)))
+    r = _search("메구리즘 유자향")
+    assert r["status"] == "ok" and len(r["products"]) == 3
+
+
+def test_missing_is_free_shipping_means_not_free(monkeypatch) -> None:
+    row = _p(1, "멕리듬 온열 순환 스팀 아이마스크 12매 7종 택1 (무향/라벤더/캐모마일/유자/숲속/히노키/금목서)",
+             15900.0, False, False, B1)
+    del row["isFreeShipping"]
+    rocket = _p(2, "멕리듬 온열 순환 스팀 아이마스크 12매 7종 택1 (무향/라벤더/캐모마일/유자/숲속/히노키/금목서)",
+                16900, True, False, _url("222", "9102", "7102"))
+    del rocket["isFreeShipping"]
+    _enable(monkeypatch, lambda req: httpx.Response(200, json={"rCode": "0", "data": {"landingUrl": SRP,
+                                                                                         "productData": [row, rocket]}}))
+    (p,) = _search("메구리즘 유자향")["products"]
+    assert p["is_free_shipping"] is False and p["rocket_option"]["is_free_shipping"] is False
+
+
+# ---------- 다시 찾기(한 물건에 3번) ----------
+
+def test_no_match_next_steps_retry_twice_then_stop(monkeypatch) -> None:
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=_filler(GOLDBOX)))
+    r1 = asyncio.run(server.coupang_search("메구리즘 유자향", attempt=1))
+    r2 = asyncio.run(server.coupang_search("스팀 아이마스크 유자향", attempt=2))
+    r3 = asyncio.run(server.coupang_search("메구리즘", attempt=3))
+    assert "attempt=2" in r1["next_step"] and "attempt=3" in r2["next_step"]
+    for r in (r1, r2):
+        assert "웹 검색으로 가지 않고" in r["next_step"] and "'유자향'을 '유자'로 줄이지 않는다" in r["next_step"]
+    assert r3["next_step"] == server.COUPANG_STOP_NEXT
+    assert "'쿠팡에서는 제가 찾는 방법으로는 못 찾았어요'로 시작" in r3["next_step"]
+
+
+def test_ok_carries_next_if_no_match_for_filtering_everything_out(monkeypatch) -> None:
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=OK))
+    assert "attempt=2" in asyncio.run(server.coupang_search("록시땅 핸드크림", attempt=1))["next_if_no_match"]
+    assert asyncio.run(server.coupang_search("록시땅", attempt=3))["next_if_no_match"] == server.COUPANG_STOP_NEXT
+
+
+def test_fourth_call_is_not_requested(monkeypatch) -> None:
+    calls = []
+    _enable(monkeypatch, lambda req: calls.append(1) or httpx.Response(200, json=OK))
+    r = asyncio.run(server.coupang_search("메구리즘", attempt=4))
+    assert calls == [] and r["status"] == "empty" and r["next_step"] == server.COUPANG_STOP_NEXT
+
+
+def test_rules_text_for_brand_spelling_and_listed_options() -> None:
+    rules = " ".join(server.COUPANG_RULES)
+    assert "name 에 그 브랜드가 없는 상품은 버린다" not in rules
+    assert "다른 표기(음차, 한국 판매명, 영문)" in rules and "쿠팡에서는 '멕리듬'이라는 이름으로 팔아요" in rules
+    assert "같은 브랜드인지 확인해 주세요" in rules and "'유자는 들어가서 골라 주세요'" in rules
+    assert "① 브랜드 + 사용자가 말한 특징을 말 그대로" in server.COUPANG_SEARCH_FIRST_NOTE
 
 
 def test_per_minute_limit_30(monkeypatch) -> None:
@@ -190,10 +265,14 @@ def test_log_has_no_key_signature_or_keyword(monkeypatch) -> None:
     _search("록시땅 핸드크림")
     _enable(monkeypatch, lambda req: httpx.Response(200, json=OK))
     _search("록시땅 핸드크림")
-    handler.setStream(old)
     err = buf.getvalue()
     assert "path=coupang_search outcome=unavailable reason=http_401" in err
     assert "path=coupang_search outcome=ok rows=6" in err
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=_filler(GOLDBOX)))
+    _search("록시땅 핸드크림")
+    handler.setStream(old)
+    err = buf.getvalue()
+    assert "path=coupang_search outcome=filler rows=3" in err
     for secret in ("ak-test", "sk-test", "signature", "CEA", "록시땅", "%EB%A1%9D"):
         assert secret not in err
 
@@ -245,3 +324,14 @@ def test_other_hosts_are_not_coupang_partners_links() -> None:
     for u in ("https://www.coupang.com/vp/products/1", "https://link.coupang.com.evil.test/re/x",
               "https://evil.test/?u=https://link.coupang.com/re/x"):
         assert not profiles.is_coupang_partners_url(u), u
+
+
+def test_http_library_request_log_does_not_carry_keyword(monkeypatch, caplog) -> None:
+    """11/25 mcp-stderr.log: httpx 가 INFO 로 요청 주소(검색어 포함)를 남겼다. 서버는 httpx·httpcore 를 WARNING 이상만 남긴다."""
+    _enable(monkeypatch, lambda req: httpx.Response(200, json=OK))
+    with caplog.at_level(logging.DEBUG):
+        _search("메구리즘 유자향")
+    assert not [r for r in caplog.records if r.name in ("httpx", "httpcore")]
+    for word in ("메구리즘", "%EB%A9%94", "keyword="):
+        assert word not in caplog.text
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING

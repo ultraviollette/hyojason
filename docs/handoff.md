@@ -23,7 +23,8 @@
 | 7b50a5e | 작업 규칙에 push |
 | (이번 커밋) | 페이지 읽기 상한 15 → 8초, `say` 를 한 줄로(읽은 것·못 읽은 것 따로), 검색 결과 배송비를 `candidates[].shipping_fee_krw` 로 받기 |
 | dd285c8 | 쿠팡 파트너스 응답 모양 확인용 시험 스크립트(`scripts/coupang_search_probe.py`, 효자손 코드와 연결 안 함) |
-| (이번 커밋) | 쿠팡 파트너스 검색 `coupang_search`(아래 2-5), record_item 의 쿠팡 주소 거절, 브릿지 대가성 문구 보장 |
+| 10ecd19 | 쿠팡 파트너스 검색 `coupang_search`(아래 2-5), record_item 의 쿠팡 주소 거절, 브릿지 대가성 문구 보장 |
+| (이번 커밋) | 11/25 실사용 반영: 채움 결과(AFFGOLDBOX)를 empty 로, 검색어 바꿔 최대 3번, 브랜드 다른 표기, 옵션 나열 상품, httpx 요청 로그 끄기 |
 | c79139a | f3f5b0c 시험 반영: 후보 페이지 확인(`check_candidates`), 기록의 `match`(같은 물건/비슷한 것), 해요체·내부 용어·군말 금지(`confirm_note`), SKILL description |
 
 ## 2. 새로 생긴 구조
@@ -164,16 +165,25 @@ callback `outcome` 값:
 
 ### 2-5. 쿠팡 파트너스 검색 (`coupang_search`, 2026-11-25)
 
-**언제**: 프로필 `payment.places` 에 쿠팡이 있는 분만. place_rules 가 알려 준다. 웹 검색보다 먼저 부르고, 맞는 것이 하나도 없을 때만 웹 검색으로 간다. 그 밖의 분은 지금 흐름 그대로다. `search_products` 에서는 쿠팡을 뺐다(쿠팡을 안 쓰는 분에게 쿠팡 결과가 나가지 않게, 호출 한도를 두 번 쓰지 않게).
+**언제**: 프로필 `payment.places` 에 쿠팡이 있는 분만. place_rules 가 알려 준다. 웹 검색보다 먼저 부르고, 검색어를 바꿔 세 번 다 맞는 것이 없을 때만 웹 검색으로 간다. 그 밖의 분은 지금 흐름 그대로다. `search_products` 에서는 쿠팡을 뺐다(쿠팡을 안 쓰는 분에게 쿠팡 결과가 나가지 않게, 호출 한도를 두 번 쓰지 않게).
 
 **호출** (`mcp/shopping_tools/coupang_partners.py`)
 - `GET /v2/providers/affiliate_open_api/apis/openapi/v1/products/search?keyword=…&limit=10`, HMAC 서명. 경로·서명은 11/25 시험 스크립트로 200 을 확인했다.
 - 분당 30회(문서 한도 50보다 낮게), 요청 시간 상한 5초.
 - 반환 `status`:
   - `ok`: 상품이 있다.
-  - `empty`: rCode 0 인데 0건. 찾아봤는데 없는 것이다.
+  - `empty`: rCode 0 인데 0건이거나, 채움 결과(landingUrl 이 `https://link.coupang.com/re/AFFSRP` 로 시작하지 않음). 찾아봤는데 없는 것이다.
+    - 11/25 실사용: 검색 결과가 없으면 API 가 골드박스 상품(코카콜라·냄비·노트북 등, 호출마다 다름)으로 채워 돌려준다. 그때 landingUrl 은 `AFFGOLDBOX`, 정상 검색이면 `AFFSRP?…pageKey=<검색어>`.
   - `unavailable`: 키·스위치가 없거나, 한도·시간 초과·네트워크 예외·HTTP 오류·rCode≠0·형식 오류. 예외를 내지 않는다.
-- 로그(stderr): `path=coupang_search outcome=<ok|empty|unavailable> rows=<n>` / `reason=<이유>`. 키·서명·검색어는 남기지 않는다.
+- 로그(stderr): `path=coupang_search outcome=<ok|empty|filler|unavailable> rows=<n>` / `reason=<이유>`. 키·서명·검색어는 남기지 않는다.
+- httpx·httpcore 로거는 WARNING 이상만 남긴다(`server.py` 맨 위). 11/25 mcp-stderr.log 에 httpx 가 INFO 로 요청 주소(검색어 포함)를 남기고 있었다. 후보 확인(check_candidates)의 상품 주소도 같이 빠진다.
+- `isFreeShipping` 칸이 없는 줄이 많다. 없으면 무료배송이 아닌 것으로 본다.
+
+**다시 찾기** (`coupang_search(keyword, attempt)`, `MAX_COUPANG_ATTEMPTS=3`)
+- 검색어 순서(`COUPANG_QUERY_ORDER`, place_rules 에도 실림): ① 브랜드 + 사용자가 말한 특징을 말 그대로 ② 브랜드를 빼고 종류 + 특징 ③ 브랜드만. 특징은 향·라인·시리즈 이름이고 용량·색·유통 관련 말은 넣지 않는다(사용자 결정). 같아지거나 넣을 말이 없는 단계는 건너뛴다.
+  - 11/25 실사용 검색어별 결과: "메구리즘 유자"·"메구리즘 아이마스크"·"멕리듬 아이마스크" 채움 / "메구리즘" 정상 1건(다른 제품) / "메구리즘 유자향" 정상(유자 포함 4줄) / "스팀 아이마스크 유자" 정상.
+- empty 의 `next_step`: attempt 1·2 는 `COUPANG_RETRY_NEXT`(다음 단계로 attempt+1, 사용자에게 아직 말하지 않음), 3 은 `COUPANG_STOP_NEXT`("쿠팡에서는 제가 찾는 방법으로는 못 찾았어요"로 시작하고 웹 검색).
+- ok 에는 `next_if_no_match`(거른 뒤 맞는 것이 없을 때 같은 순서로)가 실린다. attempt 4 이상은 요청하지 않고 STOP 을 돌려준다. attempt 는 에이전트가 넘기는 값이라 코드가 물건 경계를 아는 것은 아니다.
 
 **묶기** (`server._group_products`)
 - productUrl 의 `pageKey` 로 묶는다. pageKey 가 같고 itemId 가 다른 줄은 옵션 차이다. 순서는 처음 나온 줄 순서다.
@@ -185,7 +195,8 @@ callback `outcome` 값:
 
 **응답에 싣는 규칙** (`COUPANG_RULES`)
 - 맨 첫 줄은 disclosure("이 게시물은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.").
-- name 으로 거르기(브랜드 없음·말하지 않은 세트·다른 향/라인 버림). 조건은 name 에 있을 때만 맞다고 말하고, 없으면 "들어가서 골라 주세요".
+- name 으로 거르기: 말한 브랜드의 상품만. 다른 표기(음차, 한국 판매명, 영문)는 같은 브랜드로 보고 답에 한 줄로 밝힌다("쿠팡에서는 '멕리듬'이라는 이름으로 팔아요"). 확신이 없으면 버리지 않고 "같은 브랜드인지 확인해 주세요". 별칭 표는 코드에 두지 않는다(사용자 결정). 말하지 않은 세트·다른 향/라인은 버린다.
+- 조건은 name 에 있을 때만 맞다고 말하고, 없으면 "들어가서 골라 주세요". "7종 택1 (…/유자/…)"처럼 나열된 옵션 안에 말씀하신 옵션이 있으면 후보로 삼고 "유자는 들어가서 골라 주세요".
 - 고르는 순서(의뢰인 기준):
   - 브랜드 상품: 로켓 먼저, `rocket_option` 을 고른다. 로켓이 아니면 "판매자와 배송을 들어가서 확인해 주세요". 공식·정품이라고 말하지 않는다.
   - 그 밖: 조건에 맞는 것 중 싼 순서.
@@ -195,7 +206,7 @@ callback `outcome` 값:
 - 링크·기록:
   - 링크 줄은 `N번 쿠팡: url`. check_candidates 는 부르지 않는다(코드도 coupang.com 하위 주소에는 요청하지 않는다).
   - record_item 에는 사용자가 말한 것 + seller="쿠팡"만 넣는다.
-- `empty` → "쿠팡에서는 못 찾았어요"로 시작하고 웹 검색, 쿠팡 검색어 줄 없음. `unavailable` → 옛 흐름 그대로(옛 COUPANG_FIRST_NOTE), 사용자에게 말하지 않음.
+- `empty` → 위 "다시 찾기". 세 번 다 없으면 "쿠팡에서는 제가 찾는 방법으로는 못 찾았어요"로 시작하고 웹 검색, 쿠팡 검색어 줄 없음. `unavailable` → 옛 흐름 그대로(옛 COUPANG_FIRST_NOTE), 사용자에게 말하지 않음.
 
 **카카오 브릿지** (`kakao-bridge-vps/server.py`)
 - 버튼으로 나가는 링크(최대 3개)에 `link.coupang.com` 주소가 있으면, 본문에서 `DISCLOSURE` 문장을 모두 지우고 맨 첫 줄에 한 번 둔다. 링크만 온 답은 `DISCLOSURE` + `LINKS_ONLY_BODY` 로 나간다.
@@ -237,6 +248,7 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 | (11/25) 쿠팡 검색 (새 섹션) | coupang_search 사용법(status 셋, 거르기·순서·가격·배송·기록, 예시) |
 | (11/25) 후보를 드리는 답에서 할 일 | 쿠팡 기록 규칙, place_rules 의 쿠팡 규칙 둘, 답 맨 앞 줄은 대가성 문구, 끝 줄 순서에서 대가성 문구 뺌 |
 | (11/25) 링크 표기 규칙 | 대가성 문구는 맨 첫 줄(전에는 링크 줄 바로 위), `1번 쿠팡: url` |
+| (11/25 실사용 반영) 쿠팡 검색, 1-c 7, 후보를 드리는 답에서 할 일 | 검색어 순서 ①②③·attempt·최대 3번, 브랜드 다른 표기, 옵션 나열 상품, 세 번 다 없으면 "쿠팡에서는 제가 찾는 방법으로는 못 찾았어요" |
 
 **SOUL.md** (`hermes/SOUL.md`)
 
@@ -257,7 +269,7 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 
 ```bash
 cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 50 passed
-cd mcp && uv run python -m pytest -q                            # MCP: 90 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 102 passed
 ```
 - 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
 - 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
@@ -299,6 +311,8 @@ cd mcp && uv run python -m pytest -q                            # MCP: 90 passed
 
 - (11/25) 쿠팡 파트너스 productUrl 실제 길이와 그 길이의 버튼이 카카오에서 열리는지. 사용자가 실사용으로 확인한다. 확인 필요.
 - (11/25) 응답 규칙(거르기·로켓 우선·가격 표현)이 실사용에서 지켜지는지. 확인 필요.
+- (11/25) 채움 판정은 landingUrl 접두사 하나에 기대고 있다. 쿠팡이 이 주소 형식을 바꾸면 정상 결과도 empty 가 된다(로그 outcome=filler 가 늘면 의심). 확인 필요.
+- (11/25) 다른 표기 브랜드를 같은 브랜드로 볼지는 에이전트 판단이다. 잘못 묶거나 버리는지 실사용으로 본다.
 
 ## 8. 정해진 것 (2026-11-20)
 - 비슷한 것 묶음은 날짜로만 나눈다. 같은 날 다른 물건을 비슷한 것으로 또 찾아 드리면 한 묶음이 된다.
