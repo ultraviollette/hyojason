@@ -260,10 +260,22 @@ def test_rules_text_for_brand_spelling_and_listed_options() -> None:
     assert "다른 표기(음차, 한국 판매명, 영문)" in rules and "쿠팡에서는 '멕리듬'이라는 이름으로 팔아요" in rules
     assert "같은 브랜드인지 확인해 주세요" in rules
     assert "유자는 들어가서 골라 주세요" not in rules                       # 11/25 2차 시험: 그 페이지에서 못 고른다
-    assert "이름만으로 후보로 삼지 않는다" in rules and "최대 5장" in rules
+    # 11/26: 사진 4장 비전 확인에 2분 넘게 걸려 카카오 시간 초과. 규칙에서 사진 확인을 뺐다
+    assert "비전" not in rules and "최대 5장" not in rules and "image 를 하나씩" not in rules
+    assert "사진(image)은 보지 않는다" in rules
     assert "그 상품은 후보에서 빼고 '들어가서 골라 주세요'라고 하지 않는다" in rules
-    assert "'이 링크는 숲속향이에요. 다른 향은 말씀해 주세요'" in rules
+    assert "'이 링크가 어느 향(옵션)인지는 들어가서 확인해 주세요'" in rules
+    assert "name 에 여러 값이 나열돼 있으면 그 상품은 후보에서 뺀다" in rules
     assert "name 에 아예 없을 때만 '용량은 들어가서 골라 주세요'" in rules
+
+
+def test_order_rules_keep_answers_fast() -> None:
+    rules = " ".join(server.COUPANG_RULES)
+    assert "사이에 다른 도구를 부르지 않고 이어서 부른다" in rules
+    assert "coupang_search_link 를 먼저 부르고 그다음 웹 검색" in rules
+    assert "사이에 다른 도구를 부르지 않고" in server.COUPANG_RETRY_NEXT
+    stop = server.COUPANG_STOP_NEXT
+    assert stop.index("coupang_search_link") < stop.index("웹 검색")
     assert "① 브랜드 + 사용자가 말한 특징을 말 그대로" in server.COUPANG_SEARCH_FIRST_NOTE
 
 
