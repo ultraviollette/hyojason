@@ -307,8 +307,11 @@ def _clean_item(it: Any) -> dict[str, Any]:
 
 
 COUPANG_PARTNERS_HOST = "link.coupang.com"
-COUPANG_RECORD_ERROR = ("쿠팡 상품은 주소·가격 없이, name 에는 사용자가 말한 종류를, seller 에는 쿠팡을 넣어 다시 기록해요 "
-                        "(쿠팡에서 받은 상품 이름·가격·링크는 남기지 않아요)")
+# 에이전트에게 주는 다음 단계(사용자에게 하는 말이 아니다). 11/26 실사용: 해요체 문구가 사용자용 말처럼 보였고 다음 단계가 없었다.
+COUPANG_RECORD_ERROR = ("기록하지 않았다: 쿠팡 파트너스 주소(link.coupang.com)는 약관상 저장하지 않는다. "
+                        "쿠팡 후보를 드린 답은 물건 하나에 record_item 한 번. name 은 사용자가 말한 말 그대로(예: '쌀 소면'), "
+                        "brand 는 사용자가 말했을 때만, seller='쿠팡', url·seen_price_krw 비움. 후보마다 기록하지 않는다. "
+                        "이 모양으로 한 번만 다시 기록하고, 그 뒤에 사용자에게 보낼 답을 쓴다.")
 
 
 def is_coupang_partners_url(url: str) -> bool:
@@ -363,8 +366,9 @@ def _trim_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def record_item(client_id: str, *, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
                 seller: str = "", seen_price_krw: int | None = None, url: str = "", match: str = "",
-                today: str | None = None) -> tuple[dict[str, Any], bool]:
-    """찾아 드린(found)·고르신(chosen) 물건을 정해진 칸으로 남긴다. 반환: (남긴 항목, ask_payment).
+                today: str | None = None) -> tuple[dict[str, Any], bool, bool]:
+    """찾아 드린(found)·고르신(chosen) 물건을 정해진 칸으로 남긴다. 반환: (남긴 항목, ask_payment, 합쳤는지).
+    합쳤는지: 같은 날 같은 브랜드·이름·옵션의 기록이 이미 있어 새 줄을 만들지 않았으면 True(로그용).
     chosen 은 같은 날 같은 브랜드·이름·옵션의 found 가 있으면 그 항목을 chosen 으로 바꾼다(두 줄로 남지 않게).
     ask_payment: 결제 방식을 아직 모르고(payment.by 비어 있음) 한 번도 묻지 않았을 때(asked_on 비어 있음)
     found 를 기록하는 첫 호출에서만 True 이고, 그 순간 asked_on 에 한국 날짜를 채운다. 그래서 한 답에서 후보를
@@ -395,7 +399,7 @@ def record_item(client_id: str, *, status: str, name: str, brand: str = "", opti
                     else old["seen_price_krw"]}
         cur["items"] = _trim_items([item, *items])
     _write(cur)
-    return item, ask_payment
+    return item, ask_payment, match is not None
 
 
 def _what(item: dict[str, Any]) -> str:

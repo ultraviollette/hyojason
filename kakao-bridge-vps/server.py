@@ -70,6 +70,8 @@ class Settings:
     wait_max_photo_s: float = 15.0
     # 이 파일이 있으면 사진 메시지 utterance 의 "형태"만 로그에 남긴다(기본 꺼짐). 내용·주소·ID 는 남기지 않는다.
     utterance_shape_flag: str = "~/.config/hyojason/debug-utterance-shape"
+    # 이 파일이 있으면 Hermes 응답의 "모양"(항목 수·종류·글 길이·한글 비율)만 로그에 남긴다(기본 꺼짐). 글 내용은 남기지 않는다.
+    hermes_shape_flag: str = "~/.config/hyojason/debug-hermes-shape"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | os._Environ = os.environ) -> "Settings":
@@ -108,7 +110,73 @@ async def ask_hermes(s: Settings, client: httpx.AsyncClient, kakao_user_id: str,
     )
     if not r.is_success:
         raise RuntimeError(f"hermes {r.status_code}")
-    return extract_text(r.json()) or EMPTY_MSG
+    data = r.json()
+    if Path(s.hermes_shape_flag).expanduser().exists():
+        log.info(hermes_shape_line(data))
+    return extract_text(data) or EMPTY_MSG
+
+
+# ---------- Hermes 응답 모양 로그 (디버그, 기본 꺼짐) ----------
+# 11/26 실사용: 상품 답 대신 영어 마무리 글("I apologize … The user has already received …")만 나갔다. 한 턴에 assistant 글이
+# 여러 개일 때 앞 글이 응답(output_text / output[])에 들어 있는지 Hermes 문서로 확인하지 못했다. 모양만 보고 판단하려고 둔다.
+_HANGUL = re.compile(r"[가-힣ㄱ-ㅣ]")
+_LATIN = re.compile(r"[A-Za-z]")
+_URL_ANY = re.compile(r"https?://\S+", re.I)
+
+
+def hangul_ratio(text: str) -> tuple[int, int]:
+    """주소를 뺀 글에서 (한글 수, 한글+영문 수). 숫자·기호·공백은 세지 않는다."""
+    t = _URL_ANY.sub(" ", text or "")
+    h, a = len(_HANGUL.findall(t)), len(_LATIN.findall(t))
+    return h, h + a
+
+
+def _part_shape(text: str) -> str:
+    h, total = hangul_ratio(text)
+    return f"{len(text)}:{round(100 * h / total) if total else 0}"
+
+
+def hermes_shape_line(data: Any) -> str:
+    """Hermes 응답의 모양: output_text 유무·길이·한글 %, output 항목 수와 종류, 항목별 글 조각(길이:한글 %). 글 내용은 없다.
+    예: path=hermes_shape output_text=1 output_text_shape=412:88 items=3 types=message,function_call,message
+        parts=0:412:88|2:180:3"""
+    if not isinstance(data, dict):
+        return "path=hermes_shape not_object=1"
+    ot = data.get("output_text")
+    out = data.get("output") if isinstance(data.get("output"), list) else []
+    types, parts = [], []
+    for i, item in enumerate(out):
+        if not isinstance(item, dict):
+            types.append("x")
+            continue
+        types.append(re.sub(r"[^\w.-]", "", str(item.get("type", "?")))[:30] or "?")
+        content = item.get("content") if isinstance(item.get("content"), list) else []
+        for p in content:
+            if isinstance(p, dict) and isinstance(p.get("text"), str):
+                parts.append(f"{i}:{_part_shape(p['text'])}")
+    return ("path=hermes_shape output_text=%d output_text_shape=%s items=%d types=%s parts=%s"
+            % (1 if isinstance(ot, str) else 0, _part_shape(ot) if isinstance(ot, str) else "-", len(out),
+               ",".join(types) or "-", "|".join(parts) or "-"))
+
+
+# ---------- 사용자용이 아닌 답 막기 ----------
+# 11/26 실사용: 도구 호출 뒤 에이전트가 영어로 쓴 작업 보고가 그대로 카카오에 나갔다. 그런 글은 보내지 않고 FAIL_MSG 를 보낸다.
+# 효자손 답은 항상 한국어 해요체다. 영어 상품명·브랜드(MegRhythm 등)와 주소가 섞여도 한글이 대부분이다.
+NON_USER_MIN_LATIN = 40       # 주소를 뺀 영문 글자가 이만큼은 있어야 판정한다(짧은 답·주소만 있는 답은 건드리지 않는다)
+NON_USER_HANGUL_MAX = 0.2     # 한글 비율(한글 / (한글+영문))이 이보다 낮으면 사용자용 답이 아니다
+NON_USER_MARK_HANGUL_MAX = 0.5   # 아래 말이 있고 한글 비율이 이보다 낮아도 사용자용 답이 아니다
+_NON_USER_MARKS = re.compile(
+    r"(tool call|function call|the user has|the user's|user's profile|the task is|task is now complete|"
+    r"i apologize|successfully completed|record_item|coupang_search|check_candidates|resolve_client)", re.I)
+
+
+def is_non_user_reply(text: str) -> bool:
+    h, total = hangul_ratio(text)
+    latin = total - h
+    if latin < NON_USER_MIN_LATIN:
+        return False
+    ratio = h / total
+    return ratio < NON_USER_HANGUL_MAX or (ratio < NON_USER_MARK_HANGUL_MAX and bool(_NON_USER_MARKS.search(text)))
 
 
 def extract_text(data: Any) -> str:
@@ -664,6 +732,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
                 reply, outcome, ok = FAIL_MSG, "hermes_timeout", False
             except Exception as e:  # 발화·URL 이 담길 수 있어 예외 메시지는 남기지 않는다
                 reply, outcome, ok = FAIL_MSG, f"hermes_error:{type(e).__name__}", False
+            if ok and is_non_user_reply(reply):        # 영어 작업 보고 같은 글은 보내지 않는다(내용은 로그에 남기지 않는다)
+                reply, outcome, ok = FAIL_MSG, "non_user_reply", False
             if q.epoch != epoch:                       # 처리 중에 "처음부터": 답은 종류와 상관없이 보내지 않는다
                 await send_callback(last, kakao_text_body(RESET_DROP_MSG), "dropped_by_reset")
             elif ok and q.pending and is_question_reply(reply):
@@ -739,6 +809,8 @@ def create_app(settings: Settings | None = None, client: httpx.AsyncClient | Non
                     async with user_locks.hold(user_id):
                         reply = await ask_hermes(s, app.state.client, user_id, text, images, conversation)
                 outcome = "sync_ok"
+                if is_non_user_reply(reply):
+                    reply, outcome = FAIL_MSG, "sync_ok,non_user_reply"
             except Exception as e:
                 reply, outcome = NO_CALLBACK_MSG, f"sync_fail:{type(e).__name__}"
             _log("sync", outcome, started)

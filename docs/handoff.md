@@ -25,7 +25,8 @@
 | dd285c8 | 쿠팡 파트너스 응답 모양 확인용 시험 스크립트(`scripts/coupang_search_probe.py`, 효자손 코드와 연결 안 함) |
 | 10ecd19 | 쿠팡 파트너스 검색 `coupang_search`(아래 2-5), record_item 의 쿠팡 주소 거절, 브릿지 대가성 문구 보장 |
 | e1146d2 | deeplink 응답 모양 확인용 시험 스크립트(`scripts/coupang_deeplink_probe.py`) |
-| (이번 커밋) | 11/26 시간 초과 반영: 사진(비전) 확인 규칙을 모두 뺌, coupang_search 는 이어서 다시 부르고 쿠팡 검색 버튼을 웹 검색보다 먼저 |
+| (이번 커밋) | 11/26 영어 작업 보고가 나간 일 반영: record_item 응답에 answer_note, 쿠팡 기록은 물건 하나에 한 건, 브릿지 사용자용 아닌 답 막기·Hermes 응답 모양 로그, record_item 로그 |
+| 95ce42e | 11/26 시간 초과 반영: 사진(비전) 확인 규칙을 모두 뺌, coupang_search 는 이어서 다시 부르고 쿠팡 검색 버튼을 웹 검색보다 먼저 |
 | ed0cc8f | 11/25 3차 시험 반영: 쿠팡 검색 버튼 `coupang_search_link`(deeplink), 로켓이 아닌 쿠팡 후보는 웹 후보와 견주기, 해외 판매 표시 빼기, 브릿지 "쿠팡에서 찾아보기" |
 | dfc8059 | 11/25 2차 시험 반영: 묶음마다 줄 전체(`options`: 가격·로켓·무료배송·url·image), 옵션이 나열된 상품은 사진으로 맞는 줄을 찾기 |
 | 06505d4 | 11/25 실사용 반영: 채움 결과(AFFGOLDBOX)를 empty 로, 검색어 바꿔 최대 3번, 브랜드 다른 표기, 옵션 나열 상품, httpx 요청 로그 끄기 |
@@ -89,6 +90,7 @@ callback `outcome` 값:
   - `dropped_by_reset`: 처음부터로 버림
   - `hermes_timeout`, `hermes_error:<예외 이름>`: Hermes 실패
   - `fail_safe`: 예외로 빠진 경우의 안전망
+  - `non_user_reply`: 사용자용이 아닌 답(영어 작업 보고 등)이라 보내지 않고 `FAIL_MSG` 를 보냄(아래 "사용자용 아닌 답 막기"). 동기 경로는 `sync_ok,non_user_reply`
 - 뒤에 붙는 표시
   - `,payment_q_no_links`: 결제 질문만 있고 주소가 없는 답
   - `,links_only`: 본문 없이 링크만 온 답
@@ -101,6 +103,18 @@ callback `outcome` 값:
 - 끄기: `rm ~/.config/hyojason/debug-utterance-shape`
 - 켜고 끌 때 재시작은 필요 없다.
 - shape 는 글자를 지운 모양만 남긴다: 한글→가, 영문→a, 숫자→9, 공백→_, 다른 글자→x, ASCII 기호는 그대로, 200자까지.
+
+**Hermes 응답 모양 로그** (11/26, 기본 꺼짐)
+- 왜: 11/26 실사용에서 상품 답 대신 영어 마무리 글만 나갔다. 브릿지(`extract_text`)는 `output_text` 가 있으면 그것만, 없으면 `output[]` 의 모든 `content[].text` 를 이어 붙여 쓴다. 한 턴의 앞선 assistant 글이 Hermes 응답에 들어 있는지는 확인하지 못했다. 앞 글을 꺼내는 일은 이 로그로 모양을 본 뒤에 따로 한다.
+- 표시 파일 `~/.config/hyojason/debug-hermes-shape`(VPS 실제 위치 `/home/hermes/.config/hyojason/debug-hermes-shape`)가 있을 때만, Hermes 응답마다 한 줄. 켜기 `mkdir -p ~/.config/hyojason && touch ~/.config/hyojason/debug-hermes-shape`, 끄기 `rm ~/.config/hyojason/debug-hermes-shape`. 재시작 필요 없음.
+- 줄 형식(글 내용 없음): `path=hermes_shape output_text=<0|1> output_text_shape=<길이>:<한글 %> items=<n> types=<항목 type 목록> parts=<항목 번호>:<길이>:<한글 %>|…`
+  - 한글 % = 주소를 뺀 글에서 한글 / (한글 + 영문). 숫자·기호·공백은 세지 않는다.
+
+**사용자용 아닌 답 막기** (`is_non_user_reply`, 11/26)
+- 주소를 뺀 글의 영문 글자가 `NON_USER_MIN_LATIN = 40` 자 이상일 때만 판정한다(짧은 답·주소만 있는 답은 건드리지 않는다).
+- 한글 비율(한글 / (한글+영문))이 `NON_USER_HANGUL_MAX = 0.2` 보다 낮으면 막는다.
+- 또는 한글 비율이 `NON_USER_MARK_HANGUL_MAX = 0.5` 보다 낮고 다음 말이 있으면 막는다(대소문자 무시): tool call, function call, the user has, the user's, user's profile, the task is, task is now complete, i apologize, successfully completed, record_item, coupang_search, check_candidates, resolve_client.
+- 막으면 `FAIL_MSG` 를 보내고 `outcome=non_user_reply`. 글 내용은 로그에 남기지 않는다. 시험: 쿠팡 주소·영어 상품명이 섞인 한국어 답, 주소만 있는 답, "MegRhythm" 같은 영문 브랜드가 든 답은 걸리지 않는다.
 
 ### 2-2. 프로필 (`mcp/shopping_tools/profiles.py`, 양식 `clients/_example.yaml`)
 - 스키마는 코드가 강제한다. 옛 형식 파일도 `standardize()` 로 읽는다.
@@ -119,6 +133,9 @@ callback `outcome` 값:
 | `match` | `same`(찾던 그 물건) \| `similar`(비슷한 것·닮은 제품으로 드림) \| `""`(모름, 옛 기록). found 를 같은 물건으로 합칠 때 빈 값은 옛 값을 지킴 |
 
 - 최근 50건까지 보관한다. 넘으면 오래된 found 부터 지우고, chosen 은 끝까지 남긴다.
+- 로그(stderr, 11/26): 호출마다 `path=record_item outcome=<recorded|merged|rejected_coupang_url|rejected> status=<found|chosen|?>`. 이름·주소·사용자 ID 는 남기지 않는다. merged 는 같은 날 같은 브랜드·이름·옵션 기록에 합친 것.
+- 쿠팡 후보를 드린 답은 물건 하나에 한 건만(규칙으로만, 코드로 합치지 않음. 같은 날 다른 물건이 한 줄로 뭉치면 안 되므로): name 은 사용자가 말한 말 그대로, brand 는 사용자가 말했을 때만, seller='쿠팡', url·가격 없음. 웹 후보는 후보마다 기록한다.
+  - 11/26 실사용: "쌀 소면 찾아줘" 한 번에 쿠팡 후보마다 found 가 남았다(name "옛날 국수 쌀소면" / "국산쌀소면" / "쌀 소면", seller 쿠팡, url·가격 없음, match same, 그 뒤 네 번째 기록). url·가격은 비었지만 name 에 쿠팡 상품명에서 온 말이 들어갔다.
 - 같은 날·같은 브랜드·이름·옵션이면 한 줄로 합친다. found 를 chosen 으로 남기면 그 줄이 chosen 으로 바뀐다. 빈 값은 옛 값을 지킨다.
 - 도구가 돌려주는 items 는 chosen 전부와 최근 found 10건이다(`items_omitted` 로 뺀 건수를 알림).
 - 쿠팡 파트너스 API 데이터는 약관상 저장·복제 금지다. `record_item` 은 호스트가 `link.coupang.com` 인 주소(/re/·/a/ 모두)를 받으면 저장하지 않고 거절한다(`COUPANG_RECORD_ERROR`: "name 에는 사용자가 말한 종류를, seller 에는 쿠팡을 넣어 다시 기록"). 거절은 칸 검사에서 나므로 `asked_on` 이 채워지지 않고, 결제 질문은 재호출 때 한 번 나간다. 쿠팡 기록에는 url 이 없어 1-d(재검색 없이 돌려주기) 대상이 아니다.
@@ -139,6 +156,7 @@ callback `outcome` 값:
 | `ask_payment` / `ask_payment_note` | `record_item` | 결제 방식을 모르고 물은 적도 없을 때 found 첫 기록에서 한 번만. 노트는 "후보와 링크를 다 쓰고 맨 끝에 결제 질문 한 줄" |
 | `place_rules` | `resolve_client`, `get_client_profile`, `save_client_profile`, `record_item(found)` | `places` 에 쿠팡이 있으면: 쿠팡 검색이 켜져 있으면(키 둘 + `COUPANG_PARTNERS_VERIFIED=1`) `COUPANG_SEARCH_FIRST_NOTE`(coupang_search 먼저), 아니면 옛 `COUPANG_FIRST_NOTE`(쿠팡 검색어 줄을 답 맨 앞에). 네이버가 있으면 `NAVER_FIRST_NOTE`(웹 검색 후보 중 smartstore.naver.com·brand.naver.com 상품 페이지를 앞에). 둘 다면 쿠팡이 먼저. 해당 없으면 칸 자체가 없음 |
 | `items[].confirm_phrase` | 프로필 보기(파일에는 저장 안 함) | chosen → "지난번 ○○ 맞으세요?" / found+same → "지난번에 찾아 드렸던 ○○ 말씀이세요?" / found+similar → "지난번에 비슷한 걸로 ○○ 등 N개 찾아 드렸어요. 그중에서 고르실래요, 다시 찾아볼까요?" / found+""(옛 기록) → 같은 문장에서 "비슷한 걸로"만 뺌. N 은 같은 날·같은 match 의 found 묶음, ○○ 는 묶음에서 먼저 기록된 것. 1개면 "그걸로 보실래요, 다시 찾아볼까요?" |
+| `answer_note`(`ANSWER_NOTE`) | `record_item`(성공·거절 모두), `coupang_search` 의 rules | "기록은 사용자에게 보낼 답을 쓰기 전에 끝낸다. 도구 호출을 모두 끝낸 뒤 마지막에 쓰는 글 하나만 사용자에게 전달된다. 그 글에 후보와 링크를 전부 담는다. 도구 호출 뒤에 요약·보고·사과를 쓰지 않는다. 한국어 해요체로만." (11/26) |
 | `confirm_note` | 프로필에 items 가 있을 때 `resolve_client` 등 `place_rules` 와 같은 응답 | 확인 질문은 confirm_phrase 로 바로 시작, 사진 설명·기록 이야기 금지, 내부 용어 금지, 해요체만 |
 | `check_candidates` 의 `results[].show`·`say`, `note` | `check_candidates` | 아래 2-4 |
 | `disclosure`, `rules`(`COUPANG_RULES`), `next_step`(`COUPANG_EMPTY_NEXT`·`COUPANG_UNAVAILABLE_NEXT`) | `coupang_search` | 아래 2-5 |
@@ -296,8 +314,8 @@ Hermes 프로필 쪽 사본은 따로 갱신해야 한다. `~/.hermes/` 는 작�
 ## 4. 테스트
 
 ```bash
-cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 52 passed
-cd mcp && uv run python -m pytest -q                            # MCP: 120 passed
+cd kakao-bridge-vps && uv run --project . python -m pytest -q   # 브릿지: 57 passed
+cd mcp && uv run python -m pytest -q                            # MCP: 122 passed
 ```
 - 다른 venv 가 켜져 있으면 uv 가 `VIRTUAL_ENV ... will be ignored` 경고를 내지만 결과에는 영향이 없다.
 - 프롬프트(SOUL·SKILL) 규칙은 테스트로 확인되지 않는다. 실사용으로 본다.
@@ -343,6 +361,8 @@ cd mcp && uv run python -m pytest -q                            # MCP: 120 passe
 - (11/25) 다른 표기 브랜드를 같은 브랜드로 볼지는 에이전트 판단이다. 잘못 묶거나 버리는지 실사용으로 본다.
 - (11/26) 브릿지가 쿠팡 검색 버튼을 경로 `/a/` 로 가린다. deeplink 로 상품 주소를 바꾸게 되면 그것도 `/a/` 일 수 있어 "쿠팡에서 찾아보기"로 잘못 나간다. 지금은 상품 주소를 deeplink 로 바꾸지 않는다.
 - (11/26) "같은 양으로 견줘 대략 1.5배"와 해외 판매 표시 판단은 에이전트가 이름을 읽고 한다. 실사용으로 본다.
+- (11/26) match 빈칸: 종류만 말한 요청(예: "쌀 소면 찾아줘", 브랜드·제품명 없음)에 맞는 match 값이 없다. same 은 "찾던 그 물건(브랜드·제품명이 확인된 경우)", similar 는 "똑같은 건 못 찾았고 비슷한 것"이라 둘 다 맞지 않는데, 규칙은 "found 에는 반드시 채운다"이고 "" 는 문서상 옛 기록 뜻이다. 실사용에서는 same 이 붙었다(다음에 "지난번에 찾아 드렸던 ○○ 말씀이세요?"로 물을 수 있다). 이번에는 손대지 않기로 했다(사용자 결정).
+- (11/26) Hermes 응답에 한 턴의 앞 글이 들어 있는지. `debug-hermes-shape` 로그로 본 뒤, 들어 있으면 안전망에서 "주소가 있는 마지막 한국어 글"을 꺼내 보내는 것을 따로 정한다. 확인 필요.
 - (11/26) 비전 도구는 있었고 사진 4장에 2분 넘게 걸렸다. 규칙에서 사진 확인을 뺐다. 다시 쓰려면 시간 한도 안에 드는 방법(장수·순서)을 먼저 정해야 한다.
 - (11/26) 브릿지 실패 문구 조건: `HERMES_TIMEOUT_S = 240`(kakao-bridge-vps/server.py). 이 턴 마지막 메시지 도착부터 센다(합치기 대기 포함). 넘으면 `FAIL_MSG`, 로그 `outcome=hermes_timeout`. Hermes 오류면 `hermes_error:<예외>`. 카카오 콜백은 최대 5분 유효.
 - (11/25) 이름에 옵션이 나열되지 않은 상품도 줄마다 다른 옵션 페이지로 가는지(그렇다면 price_varies 의 "…원부터, 옵션에 따라 달라요"도 틀린 말이 된다). 확인 필요.

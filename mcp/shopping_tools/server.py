@@ -162,6 +162,20 @@ def save_client_profile(channel: str, channel_user_id: str, display_name: str = 
                              view)
 
 
+# 답 쓰는 순서(사용자 결정, 2026-11-26). 실사용: 상품 답을 쓴 뒤 record_item 을 여러 번 부르고 마지막에 영어 작업 보고를
+# 썼는데, 사용자에게는 그 마지막 글만 나갔다. record_item 응답(성공·거절 모두)에 항상 싣는다.
+ANSWER_NOTE = ("기록은 사용자에게 보낼 답을 쓰기 전에 끝낸다. 도구 호출을 모두 끝낸 뒤 마지막에 쓰는 글 하나만 사용자에게 전달된다. "
+               "그 글에 후보와 링크를 전부 담는다. 도구 호출 뒤에 요약·보고·사과를 쓰지 않는다. 한국어 해요체로만.")
+# record_item 이 한 요청에 몇 번 불렸는지 보려는 로그(11/26 실사용에서 알 수 없었다). 이름·주소·사용자 ID 는 남기지 않는다.
+_record_log = logging.getLogger("hyojason.record_item")
+if not _record_log.handlers:
+    _rh = logging.StreamHandler(sys.stderr)
+    _rh.setFormatter(logging.Formatter("%(message)s"))
+    _record_log.addHandler(_rh)
+    _record_log.setLevel(logging.INFO)
+    _record_log.propagate = False
+
+
 @mcp.tool()
 def record_item(client_id: str, status: str, name: str, brand: str = "", options: dict[str, str] | None = None,
                 seller: str = "", seen_price_krw: int | None = None, url: str = "",
@@ -171,8 +185,9 @@ def record_item(client_id: str, status: str, name: str, brand: str = "", options
     seller: 판매처 이름. seen_price_krw: 그때 본 실제 판매가(원, 줄 그어진 정가가 아님). 적혀 있던 경우만, 모르면 비운다.
     url: 답에 링크로 드린 상품 페이지 주소(도구·검색 결과가 준 그대로). 검색 결과 페이지 주소는 넣지 않는다.
     크라우드펀딩(와디즈·텀블벅) 주소는 거절된다(후보가 아니다).
-    쿠팡 파트너스 주소(link.coupang.com)도 거절된다(약관상 저장 금지). 쿠팡 상품은 url·seen_price_krw 없이,
-    name 에는 사용자가 말한 종류, seller="쿠팡"으로 남긴다. 쿠팡에서 받은 상품 이름·가격은 넣지 않는다.
+    쿠팡 파트너스 주소(link.coupang.com)도 거절된다(약관상 저장 금지). 쿠팡 후보를 드린 답은 물건 하나에 한 번만 부른다:
+    name 은 사용자가 말한 말 그대로, brand 는 사용자가 말했을 때만, seller="쿠팡", url·seen_price_krw 비움. 후보마다 부르지 않는다.
+    부르는 때: 사용자에게 보낼 답을 쓰기 전(answer_note).
     match: found 일 때 반드시 채운다. "same" = 찾던 그 물건으로 드림(브랜드·제품명이 확인된 경우),
     "similar" = "똑같은 건 못 찾았고 비슷한 것"·"닮은 제품"으로 드림(브랜드를 모르는 사진이면 항상 similar).
     결제했는지는 알 수 없으므로 기록하지 않는다. 날짜는 서버가 채운다.
@@ -180,12 +195,15 @@ def record_item(client_id: str, status: str, name: str, brand: str = "", options
     ask_payment 가 true 일 때만 이번 답 끝에 결제 방식 질문을 붙인다. 도구가 평생 한 번만 true 를 준다.
     결제 질문은 후보와 링크를 모두 쓴 답의 맨 끝에만 붙인다. 결제 질문만 있는 답은 쓰지 않는다(ask_payment_note)."""
     try:
-        item, ask_payment = profiles.record_item(client_id, status=status, name=name, brand=brand, options=options,
-                                                 seller=seller, seen_price_krw=seen_price_krw, url=url,
-                                                 match=match)
+        item, ask_payment, merged = profiles.record_item(client_id, status=status, name=name, brand=brand,
+                                                         options=options, seller=seller, seen_price_krw=seen_price_krw,
+                                                         url=url, match=match)
     except ValueError as e:
-        return {"recorded": False, "error": str(e), "ask_payment": False}
-    out = {"recorded": True, "item": item, "ask_payment": ask_payment}
+        reason = "rejected_coupang_url" if str(e) == profiles.COUPANG_RECORD_ERROR else "rejected"
+        _record_log.info("path=record_item outcome=%s status=%s", reason, status if status in profiles.ITEM_STATUSES else "?")
+        return {"recorded": False, "error": str(e), "ask_payment": False, "answer_note": ANSWER_NOTE}
+    _record_log.info("path=record_item outcome=%s status=%s", "merged" if merged else "recorded", item["status"])
+    out = {"recorded": True, "item": item, "ask_payment": ask_payment, "answer_note": ANSWER_NOTE}
     if ask_payment:  # 11/20 실사용: 후보를 기록하고도 답에 결제 질문만 써서 후보가 사라졌다
         out["ask_payment_note"] = ASK_PAYMENT_NOTE
     if status == "found":
@@ -270,8 +288,10 @@ COUPANG_RULES = [
     "둘 다 아니면 '배송비가 더 붙을 수 있어요'.",
     "링크 줄은 'N번 쿠팡: url' 로 쓰고 url 은 글자 하나 바꾸지 않는다(카카오에서 '쿠팡에서 보기' 버튼이 된다). "
     "쿠팡 링크에는 check_candidates 를 부르지 않는다.",
-    "record_item 에는 쿠팡에서 받은 이름·가격·링크를 넣지 않는다. name 은 사용자가 말한 종류, brand·options 는 사용자가 말한 것, "
-    "seller='쿠팡', url·seen_price_krw 는 비운다. 쿠팡 기록은 다음에 다시 물으시면 다시 검색한다.",
+    "record_item 에는 쿠팡에서 받은 이름·가격·링크를 넣지 않는다. 쿠팡 후보를 드린 답은 물건 하나에 record_item 한 번. "
+    "name 은 사용자가 말한 말 그대로(예: '쌀 소면'), brand 는 사용자가 말했을 때만, seller='쿠팡', url·seen_price_krw 비움. "
+    "후보마다 기록하지 않는다. 쿠팡 기록은 다음에 다시 물으시면 다시 검색한다.",
+    ANSWER_NOTE,
     "거른 뒤 맞는 상품이 하나도 없으면 바로 웹 검색으로 가지 않는다. 이 응답의 next_if_no_match 를 따른다"
     "(검색어 순서대로 다시 찾기, 한 물건에 최대 3번).",
     "쿠팡 상품 후보를 하나도 내지 못한 답(세 번 다 못 찾음, 옵션이 나열돼 뺌, 위 규칙으로 뺌)에는 coupang_search_link 를 "
@@ -385,7 +405,7 @@ async def coupang_search_link(keyword: str) -> dict[str, Any]:
 
 
 _SPACES = re.compile(r"\s+")
-ASK_PAYMENT_NOTE = ("후보와 링크를 먼저 모두 쓰고, 그 답의 맨 끝에 결제 방식 질문 한 줄을 붙인다. "
+ASK_PAYMENT_NOTE = ("후보와 링크를 모두 담은 그 답의 맨 끝에 결제 방식 질문 한 줄을 붙인다. "
                     "결제 질문만 있는 답은 쓰지 않는다. 이번 답에서 기록한 후보는 모두 보여 준다.")
 # 쿠팡 검색 링크는 카카오 인앱 브라우저에서 www·m 주소 모두 "사용권한이 없습니다"로 막혀 링크 대신 검색어만 준다.
 NAVER_SHOP_SEARCH = "https://m.search.naver.com/search.naver?where=m_shop&query="

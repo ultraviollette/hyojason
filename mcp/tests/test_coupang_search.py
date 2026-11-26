@@ -331,7 +331,11 @@ def test_record_item_refuses_coupang_link_then_retry_without_it_records(url) -> 
                                seen_price_krw=19000, url=url, match="same")
     assert first["recorded"] is False and first["ask_payment"] is False
     assert first["error"] == profiles.COUPANG_RECORD_ERROR
-    assert "seller 에는 쿠팡" in first["error"] and "name 에는 사용자가 말한 종류" in first["error"]
+    err = first["error"]
+    assert "seller='쿠팡'" in err and "name 은 사용자가 말한 말 그대로" in err and "후보마다 기록하지 않는다" in err
+    assert "한 번만 다시 기록하고, 그 뒤에 사용자에게 보낼 답을 쓴다" in err
+    assert "해요" not in err                                              # 사용자에게 하는 말처럼 보이지 않게
+    assert first["answer_note"] == server.ANSWER_NOTE
     p = profiles.get_profile(cid)
     assert p["items"] == [] and p["payment"]["asked_on"] == ""            # 거절은 아무것도 남기지 않는다
 
@@ -492,3 +496,42 @@ def test_link_rules_and_stop_next_text() -> None:
     rules = " ".join(server.COUPANG_RULES)
     assert "대략 1.5배 이상" in rules and "Amazon, 직구, 해외, 구매대행, 일본 한정" in rules
     assert "쿠팡 상품 후보를 하나도 내지 못한 답" in rules
+
+
+# ---------- 답 쓰는 순서(answer_note), record_item 로그 ----------
+
+def test_record_item_always_carries_answer_note_and_rules_text() -> None:
+    cid = server.save_client_profile("kakao", KAKAO_ID, display_name="어머니")["client_id"]
+    ok = server.record_item(cid, "found", "쌀 소면", seller="쿠팡")
+    bad = server.record_item(cid, "found", "")                              # name 이 비어 거절
+    for r in (ok, bad):
+        assert r["answer_note"] == server.ANSWER_NOTE
+    assert server.ANSWER_NOTE == ("기록은 사용자에게 보낼 답을 쓰기 전에 끝낸다. 도구 호출을 모두 끝낸 뒤 마지막에 쓰는 글 하나만 "
+                                  "사용자에게 전달된다. 그 글에 후보와 링크를 전부 담는다. 도구 호출 뒤에 요약·보고·사과를 "
+                                  "쓰지 않는다. 한국어 해요체로만.")
+    rules = " ".join(server.COUPANG_RULES)
+    assert server.ANSWER_NOTE in server.COUPANG_RULES
+    assert "쿠팡 후보를 드린 답은 물건 하나에 record_item 한 번" in rules and "후보마다 기록하지 않는다" in rules
+    assert "먼저" not in server.ASK_PAYMENT_NOTE
+
+
+def test_record_item_log_line_has_outcome_only() -> None:
+    buf = io.StringIO()
+    handler = server._record_log.handlers[0]
+    old = handler.setStream(buf)
+    cid = server.save_client_profile("kakao", KAKAO_ID, display_name="어머니")["client_id"]
+    server.record_item(cid, "found", "쌀 소면", seller="쿠팡")
+    server.record_item(cid, "found", "쌀 소면", seller="쿠팡")                # 같은 날 같은 물건 → 합침
+    server.record_item(cid, "found", "샘표 쌀 소면", url=A1)                  # 쿠팡 주소 거절
+    server.record_item(cid, "maybe", "쌀 소면")                              # 다른 이유로 거절
+    server.record_item(cid, "chosen", "쌀 소면", seller="쿠팡")               # found → chosen 전환도 합침
+    handler.setStream(old)
+    assert buf.getvalue().splitlines() == [
+        "path=record_item outcome=recorded status=found",
+        "path=record_item outcome=merged status=found",
+        "path=record_item outcome=rejected_coupang_url status=found",
+        "path=record_item outcome=rejected status=?",
+        "path=record_item outcome=merged status=chosen",
+    ]
+    for leak in ("쌀", "샘표", "link.coupang", cid, KAKAO_ID):
+        assert leak not in buf.getvalue()

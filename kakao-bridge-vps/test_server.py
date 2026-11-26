@@ -1,6 +1,7 @@
 """가짜 Hermes 와 가짜 callbackUrl 로 "즉시 useCallback 반환 → 나중에 콜백 POST" 를 확인한다."""
 import asyncio
 import json
+import logging
 
 import httpx
 
@@ -920,3 +921,102 @@ def test_product_and_search_coupang_links_are_told_apart() -> None:
     body = kakao_reply_body(f"{LINE}\n1번 쿠팡: {AFF}\n쿠팡 검색: {SEARCH_SHORT}")
     assert _buttons(body) == [("1번 쿠팡에서 보기", AFF), ("쿠팡에서 찾아보기", SEARCH_SHORT)]
     assert all(len(label) <= 14 for label, _ in _buttons(body))
+
+
+# ---------- 사용자용이 아닌 답 막기, Hermes 응답 모양 로그 ----------
+from server import FAIL_MSG, hermes_shape_line, is_non_user_reply  # noqa: E402
+
+# 11/26 실사용에서 카카오에 나간 글(앞부분, 상품명은 그대로)
+REPORT_REPLY = ("I apologize for the confusion. The tool calls to record the items were successfully completed - "
+                "all three rice noodle products (샘표 쌀 소면, 샘표 국산쌀소면, and 오뚜기 옛날 국수 쌀소면) have been "
+                "recorded in the user's profile. The task is now complete: 1. Resolved the client profile 2. Searched "
+                "Coupang 3. Provided three suitable products with Coupang partner links 4. Recorded all three products "
+                "in the client's history. The user has already received the complete response with the product "
+                "information and links.")
+
+
+def test_english_task_report_is_not_a_user_reply() -> None:
+    assert is_non_user_reply(REPORT_REPLY)
+    assert is_non_user_reply("Done. I searched Coupang and recorded the items for this client successfully.")
+
+
+def test_normal_korean_replies_are_not_caught() -> None:
+    ok_replies = [
+        f"{DISCLOSURE}\n멕리듬 스팀 아이마스크로 찾았어요.\n"
+        "1) MegRhythm Steam Eye Mask Lavender 12P · 12매 · 지금 약 15,900원, 들어가시면 달라질 수 있어요\n"
+        "   로켓배송\n2) Megrhythm Gentle Steam Eye Mask Unscented 5 sheets · 약 9,800원\n"
+        "   배송비가 더 붙을 수 있어요 · 판매자와 배송을 들어가서 확인해 주세요\n"
+        f"재고·도착일은 링크에서 확인하세요.\n\n1번 쿠팡: {AFF}\n2번 쿠팡: {AFF2}",
+        f"1번 쿠팡: {AFF}",                                                 # 주소만 있는 짧은 답
+        f"아래 버튼을 눌러 열어 보세요.\n쿠팡 검색: {SEARCH_SHORT}",
+        "MegRhythm 맞으세요?",
+        "L'OCCITANE Shea Butter Hand Cream 30ml · 지금 약 19,000원, 들어가시면 달라질 수 있어요. 재고·도착일은 링크에서 확인하세요.",
+        "ELO Flower Tumbler Navy 240ml 맞으세요? 어디서 사셨는지 알려 주세요.",
+    ]
+    for r in ok_replies:
+        assert not is_non_user_reply(r), r
+
+
+def test_non_user_reply_is_replaced_with_fail_msg_on_callback(caplog) -> None:
+    async def run() -> list[dict]:
+        callbacks: list[dict] = []
+
+        async def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.host == "hermes.test":
+                return httpx.Response(200, json={"output_text": REPORT_REPLY})
+            callbacks.append(json.loads(req.content))
+            return httpx.Response(200)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app = create_app(Settings(hermes_api_url=HERMES, **FAST), client=client)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bridge") as bridge:
+                await bridge.post("/kakao/skill", json={"userRequest": {"utterance": "쌀 소면 찾아줘",
+                                                                       "callbackUrl": CALLBACK, "user": {"id": "u"}}})
+                await asyncio.wait_for(app.state.drain(), timeout=2)
+        await client.aclose()
+        return callbacks
+
+    with caplog.at_level(logging.INFO, logger="hyojason.bridge"):
+        callbacks = asyncio.run(run())
+    assert len(callbacks) == 1 and _texts(callbacks[0]) == [FAIL_MSG]
+    assert "outcome=non_user_reply" in caplog.text
+    assert "apologize" not in caplog.text and "샘표" not in caplog.text
+
+
+def test_hermes_shape_line_has_shape_only() -> None:
+    data = {"output_text": REPORT_REPLY, "output": [
+        {"type": "message", "content": [{"type": "output_text", "text": f"{DISCLOSURE}\n샘표 쌀 소면 · 약 3,000원\n1번 쿠팡: {AFF}"}]},
+        {"type": "function_call", "name": "record_item", "arguments": "{\"name\": \"쌀 소면\"}"},
+        {"type": "message", "content": [{"type": "output_text", "text": REPORT_REPLY}]}]}
+    line = hermes_shape_line(data)
+    assert line.startswith("path=hermes_shape output_text=1 output_text_shape=")
+    assert "items=3 types=message,function_call,message" in line and "parts=0:" in line and "|2:" in line
+    for leak in ("apologize", "샘표", "record_item", "link.coupang", "쌀"):
+        assert leak not in line
+    assert hermes_shape_line({"output": []}) == ("path=hermes_shape output_text=0 output_text_shape=- items=0 "
+                                                 "types=- parts=-")
+
+
+def test_hermes_shape_logged_only_when_flag_file_exists(tmp_path, caplog) -> None:
+    async def run(flag: str) -> None:
+        async def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.host == "hermes.test":
+                return httpx.Response(200, json={"output_text": "네, 찾아볼게요."})
+            return httpx.Response(200)
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app = create_app(Settings(hermes_api_url=HERMES, hermes_shape_flag=flag, **FAST), client=client)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bridge") as bridge:
+                await bridge.post("/kakao/skill", json={"userRequest": {"utterance": "안녕",
+                                                                       "callbackUrl": CALLBACK, "user": {"id": "u"}}})
+                await asyncio.wait_for(app.state.drain(), timeout=2)
+        await client.aclose()
+
+    flag = tmp_path / "debug-hermes-shape"
+    with caplog.at_level(logging.INFO, logger="hyojason.bridge"):
+        asyncio.run(run(str(flag)))
+        assert "path=hermes_shape" not in caplog.text
+        flag.touch()
+        asyncio.run(run(str(flag)))
+        assert "path=hermes_shape output_text=1" in caplog.text
